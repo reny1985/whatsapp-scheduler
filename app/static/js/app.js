@@ -828,38 +828,19 @@ function renderContactos(lista) {
     }
     return;
   }
-  const PAGE = 80;
-  let _offset = PAGE;
-
-  const renderItem = (c) => `
+  el.innerHTML = lista.map(c => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--color-border);cursor:pointer"
          onclick="seleccionarContacto('${c.numero}','${(c.nombre || '').replace(/'/g, '&#39;')}')"
          onmouseover="this.style.background='rgba(255,255,255,.04)'"
          onmouseout="this.style.background=''">
       <div style="width:32px;height:32px;border-radius:50%;background:var(--color-surface2);display:flex;align-items:center;justify-content:center;font-size:.8rem;flex-shrink:0">
-        ${c.nombre ? c.nombre[0].toUpperCase() : '?'}
+        ${c.nombre ? c.nombre[0].toUpperCase() : '#'}
       </div>
       <div style="flex:1;min-width:0">
         <div style="font-size:.85rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nombre || '<span style="color:var(--color-muted)">Sin nombre</span>'}</div>
         <div style="font-size:.75rem;color:var(--color-muted)">${c.numero}</div>
       </div>
-    </div>`;
-
-  el.innerHTML = lista.slice(0, PAGE).map(renderItem).join('');
-
-  // Cargar más al llegar al final del scroll
-  el.onscroll = null;
-  if (lista.length > PAGE) {
-    el.onscroll = () => {
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
-        const more = lista.slice(_offset, _offset + PAGE);
-        if (!more.length) { el.onscroll = null; return; }
-        el.insertAdjacentHTML('beforeend', more.map(renderItem).join(''));
-        _offset += PAGE;
-        if (_offset >= lista.length) el.onscroll = null;
-      }
-    };
-  }
+    </div>`).join('');
 }
 
 function usarNumeroManual() {
