@@ -50,7 +50,9 @@ async def subir_archivo(file: UploadFile = File(...)):
         guessed, _ = mimetypes.guess_type(file.filename or "")
         content_type = guessed or "application/octet-stream"
 
-    tipo_media = MIME_TO_TIPO.get(content_type)
+    # Strip codecs parameter (e.g. "audio/webm;codecs=opus" → "audio/webm")
+    base_ct = content_type.split(";")[0].strip()
+    tipo_media = MIME_TO_TIPO.get(base_ct)
     if not tipo_media:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,

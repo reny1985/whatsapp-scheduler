@@ -15,6 +15,7 @@ import os
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -63,7 +64,7 @@ def _evo_headers(token: str | None = None) -> dict:
 def _make_absolute_url(url_media: str) -> str:
     if url_media.startswith("http://") or url_media.startswith("https://"):
         return url_media
-    return BASE_PUBLIC_URL.rstrip("/") + url_media
+    return BASE_PUBLIC_URL.rstrip("/") + quote(url_media)
 
 
 async def _enviar_mensaje(

@@ -525,3 +525,19 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   .page { padding: 20px 16px; }
   .topbar { padding: 0 16px; }
 }
+
+/* Grabación de audio/video */
+@keyframes grabPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.85); }
+}
+
+/* Combo buscable de grupos */
+.grupo-opt {
+  padding: 9px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border);
+  transition: background .15s;
+}
+.grupo-opt:last-child { border-bottom: none; }
+.grupo-opt:hover, .grupo-opt.selected { background: rgba(37,211,102,.12); }

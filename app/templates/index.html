@@ -244,13 +244,22 @@
 
           <!-- Destino: grupo (dropdown automático) -->
           <div class="form-group" id="grp-grupo">
-            <label class="form-label" for="sel-grupo">Grupo *</label>
-            <select id="sel-grupo" class="form-control">
-              <option value="">Cargando grupos...</option>
-            </select>
+            <label class="form-label">Grupo *</label>
+            <!-- input oculto — guarda el JID del grupo seleccionado -->
+            <input type="hidden" id="sel-grupo" />
+            <div style="position:relative">
+              <div style="display:flex;gap:8px">
+                <input id="inp-grupo-buscar" class="form-control" placeholder="Buscar grupo..."
+                       autocomplete="off" style="flex:1"
+                       oninput="filtrarGrupos(this.value)"
+                       onfocus="abrirListaGrupos()"
+                       onkeydown="if(event.key==='Escape')cerrarListaGrupos()" />
+                <button type="button" class="btn btn-sm btn-secondary" onclick="cerrarListaGrupos();loadGrupos()" title="Recargar grupos" style="white-space:nowrap">↺ Recargar</button>
+              </div>
+              <div id="lista-grupos-drop" style="display:none;position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:200;max-height:260px;overflow-y:auto;background:var(--color-card,#1a1f2e);border:1px solid var(--color-border);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.5)"></div>
+            </div>
             <p style="font-size:.78rem;color:var(--color-muted);margin-top:6px">
-              Los grupos se obtienen de tu sesión conectada.
-              <button type="button" onclick="loadGrupos()" style="background:none;border:none;color:var(--color-green);cursor:pointer;font-size:.78rem;padding:0">Recargar</button>
+              Los grupos se obtienen de tu sesión conectada. Escribe para buscar.
             </p>
           </div>
 
@@ -348,6 +357,20 @@
               </div>
             </div>
             <div id="alert-upload"></div>
+            <!-- Grabar audio / video -->
+            <div id="grab-btns" style="display:flex;gap:8px;margin-top:8px">
+              <button type="button" class="btn btn-sm" style="background:var(--color-surface);border:1px solid var(--color-border);color:var(--color-text)" onclick="iniciarGrabacion('audio','main')">🎙️ Grabar audio</button>
+              <button type="button" class="btn btn-sm" style="background:var(--color-surface);border:1px solid var(--color-border);color:var(--color-text)" onclick="iniciarGrabacion('video','main')">📹 Grabar video</button>
+            </div>
+            <div id="grab-estado" style="display:none;margin-top:8px;padding:10px 12px;background:var(--color-surface);border:1px solid #e53e3e;border-radius:8px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="width:10px;height:10px;border-radius:50%;background:#e53e3e;flex-shrink:0;animation:grabPulse 1s ease-in-out infinite"></span>
+                <span id="grab-label" style="font-size:.85rem">Grabando...</span>
+                <code id="grab-timer" style="margin-left:auto;font-size:.9rem;font-weight:600;color:var(--color-text)">0:00</code>
+                <button type="button" class="btn btn-sm btn-danger" onclick="detenerGrabacion('main')">⏹ Detener</button>
+              </div>
+              <video id="grab-preview" autoplay muted playsinline style="display:none;width:100%;margin-top:8px;border-radius:6px;max-height:200px;background:#000;object-fit:cover"></video>
+            </div>
           </div>
 
           <div class="form-group">
@@ -452,6 +475,20 @@
         <p style="margin:0;color:var(--color-muted);font-size:.82rem">Haz clic para seleccionar un archivo nuevo</p>
       </div>
       <div id="edit-upload-info" style="display:none;font-size:.82rem;margin-top:6px"></div>
+      <!-- Grabar audio / video (modal edición) -->
+      <div id="edit-grab-btns" style="display:flex;gap:8px;margin-top:8px">
+        <button type="button" class="btn btn-sm" style="background:var(--color-surface);border:1px solid var(--color-border);color:var(--color-text)" onclick="iniciarGrabacion('audio','edit')">🎙️ Grabar audio</button>
+        <button type="button" class="btn btn-sm" style="background:var(--color-surface);border:1px solid var(--color-border);color:var(--color-text)" onclick="iniciarGrabacion('video','edit')">📹 Grabar video</button>
+      </div>
+      <div id="edit-grab-estado" style="display:none;margin-top:8px;padding:10px 12px;background:var(--color-surface);border:1px solid #e53e3e;border-radius:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="width:10px;height:10px;border-radius:50%;background:#e53e3e;flex-shrink:0;animation:grabPulse 1s ease-in-out infinite"></span>
+          <span id="edit-grab-label" style="font-size:.85rem">Grabando...</span>
+          <code id="edit-grab-timer" style="margin-left:auto;font-size:.9rem;font-weight:600;color:var(--color-text)">0:00</code>
+          <button type="button" class="btn btn-sm btn-danger" onclick="detenerGrabacion('edit')">⏹ Detener</button>
+        </div>
+        <video id="edit-grab-preview" autoplay muted playsinline style="display:none;width:100%;margin-top:8px;border-radius:6px;max-height:200px;background:#000;object-fit:cover"></video>
+      </div>
     </div>
 
     <div class="form-group">

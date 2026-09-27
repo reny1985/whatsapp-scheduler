@@ -612,7 +612,7 @@ function toggleDestino(radio) {
   document.getElementById('lbl-manual').classList.toggle('active', val === 'manual');
 
   // required dinámico
-  document.getElementById('sel-grupo').required   = val === 'grupo';
+  // sel-grupo is hidden; validation is handled manually in programarMensaje
   document.getElementById('inp-numero').required  = val === 'personal';
   document.getElementById('inp-jid-manual').required = val === 'manual';
 
@@ -622,6 +622,85 @@ function toggleDestino(radio) {
     document.getElementById('inp-jid-manual').value = '';
     document.getElementById('hid-jid-manual').value = '';
   }
+}
+
+
+// ---- Combo buscable de grupos ----
+function _renderListaGrupos(grupos) {
+  const drop = document.getElementById('lista-grupos-drop');
+  if (!drop) return;
+  if (!grupos || !grupos.length) {
+    drop.innerHTML = '<p style="padding:10px 14px;font-size:.82rem;color:var(--color-muted)">Sin resultados</p>';
+    return;
+  }
+  const selId = document.getElementById('sel-grupo')?.value || '';
+  drop.innerHTML = grupos.map(g => {
+    const nombre = (g.subject || g.id).replace(/</g,'&lt;');
+    const size = g.size ? ` · ${g.size} miembros` : '';
+    const sel = g.id === selId ? ' selected' : '';
+    return `<div class="grupo-opt${sel}" onmousedown="seleccionarGrupo('${g.id}','${nombre.replace(/'/g,"\'")}')">`
+      + `<span style="font-size:.85rem;font-weight:500">${nombre}</span>`
+      + `<span style="font-size:.72rem;color:var(--color-muted);display:block">${g.id}${size}</span>`
+      + `</div>`;
+  }).join('');
+}
+
+function filtrarGrupos(q) {
+  const drop = document.getElementById('lista-grupos-drop');
+  if (!drop) return;
+  drop.style.display = '';
+  const term = q.trim().toLowerCase();
+  const filtrado = term
+    ? gruposCache.filter(g => (g.subject||'').toLowerCase().includes(term) || g.id.includes(term))
+    : gruposCache;
+  _renderListaGrupos(filtrado);
+}
+
+function abrirListaGrupos() {
+  if (!gruposCache.length) return;
+  const drop = document.getElementById('lista-grupos-drop');
+  if (!drop) return;
+  drop.style.display = '';
+  const q = document.getElementById('inp-grupo-buscar')?.value || '';
+  filtrarGrupos(q);
+}
+
+function cerrarListaGrupos() {
+  const drop = document.getElementById('lista-grupos-drop');
+  if (drop) drop.style.display = 'none';
+}
+
+function seleccionarGrupo(id, nombre) {
+  document.getElementById('sel-grupo').value = id;
+  document.getElementById('inp-grupo-buscar').value = nombre;
+  cerrarListaGrupos();
+}
+
+function _poblarComboGrupos(grupos, estado) {
+  const inp = document.getElementById('inp-grupo-buscar');
+  const sel = document.getElementById('sel-grupo');
+  if (!inp || !sel) return;
+  if (estado === 'cargando') {
+    inp.placeholder = 'Cargando grupos...';
+    inp.disabled = true;
+    gruposCache = [];
+    return;
+  }
+  inp.disabled = false;
+  if (estado === 'error') {
+    inp.placeholder = 'Error al cargar grupos';
+    gruposCache = [];
+    return;
+  }
+  if (!grupos.length) {
+    inp.placeholder = '— Sin grupos disponibles —';
+    gruposCache = [];
+    return;
+  }
+  gruposCache = grupos;
+  inp.placeholder = `Buscar entre ${grupos.length} grupos...`;
+  sel.value = '';
+  inp.value = '';
 }
 
 async function loadGrupos() {
@@ -654,18 +733,12 @@ async function loadGrupos() {
   const hidSesion = document.getElementById('hid-sesion');
   if (hidSesion) hidSesion.value = idSesionUsar;
 
-  sel.innerHTML = '<option value="">Cargando grupos...</option>';
+  _poblarComboGrupos([], 'cargando');
   try {
     const grupos = await apiFetch(`/sesiones/${idSesionUsar}/grupos`);
-    gruposCache = grupos;
-    if (!grupos.length) {
-      sel.innerHTML = '<option value="">— Sin grupos disponibles —</option>';
-      return;
-    }
-    sel.innerHTML = '<option value="">Selecciona un grupo...</option>' +
-      grupos.map(g => `<option value="${g.id}">${g.subject || g.id}</option>`).join('');
+    _poblarComboGrupos(grupos, 'ok');
   } catch (e) {
-    sel.innerHTML = '<option value="">Error al cargar grupos</option>';
+    _poblarComboGrupos([], 'error');
     showAlert('alert-programar', e.message, 'error');
   }
 }
@@ -677,17 +750,12 @@ async function onSesionChange() {
   _contactosCache = [];
   _contactosCargados = false;  // forzar recarga al cambiar de sesión
   // recargar grupos con la nueva sesión
-  const selGrupo = document.getElementById('sel-grupo');
-  if (selGrupo) {
-    selGrupo.innerHTML = '<option value="">Cargando grupos...</option>';
-    try {
-      const grupos = await apiFetch(`/sesiones/${sel.value}/grupos`);
-      gruposCache = grupos;
-      selGrupo.innerHTML = '<option value="">Selecciona un grupo...</option>' +
-        grupos.map(g => `<option value="${g.id}">${g.subject || g.id}</option>`).join('');
-    } catch (e) {
-      selGrupo.innerHTML = '<option value="">Error al cargar grupos</option>';
-    }
+  _poblarComboGrupos([], 'cargando');
+  try {
+    const grupos = await apiFetch(`/sesiones/${sel.value}/grupos`);
+    _poblarComboGrupos(grupos, 'ok');
+  } catch (e) {
+    _poblarComboGrupos([], 'error');
   }
 }
 
@@ -985,6 +1053,168 @@ function limpiarAdjunto(e) {
   document.getElementById('alert-upload').innerHTML = '';
 }
 
+
+// ──────────────────────────────────────────────────────────
+// Grabación de audio / video (MediaRecorder API)
+// ──────────────────────────────────────────────────────────
+let _grabRecorder = null;
+let _grabChunks   = [];
+let _grabStream   = null;
+let _grabTimer    = null;
+let _grabSecs     = 0;
+let _grabMime     = '';
+
+function _grabIds(ctx) {
+  const p = ctx === 'edit' ? 'edit-' : '';
+  return {
+    btns:    document.getElementById(p + 'grab-btns'),
+    estado:  document.getElementById(p + 'grab-estado'),
+    label:   document.getElementById(p + 'grab-label'),
+    timer:   document.getElementById(p + 'grab-timer'),
+    preview: document.getElementById(p + 'grab-preview'),
+  };
+}
+
+async function iniciarGrabacion(tipo, ctx = 'main') {
+  // Alerta cercana a los botones (no en el tope del form)
+  const alertCercano = ctx === 'edit' ? 'alert-editar' : 'alert-upload';
+
+  // Soporte del navegador
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showAlert(alertCercano, 'Tu navegador no soporta grabación de audio/video. Usa Chrome o Firefox.', 'error');
+    return;
+  }
+  if (typeof MediaRecorder === 'undefined') {
+    showAlert(alertCercano, 'Tu navegador no soporta MediaRecorder. Actualiza el navegador.', 'error');
+    return;
+  }
+
+  if (_grabRecorder) {
+    detenerGrabacion(ctx === 'main' ? 'edit' : 'main');
+  }
+
+  const ids = _grabIds(ctx);
+
+  try {
+    const constraints = tipo === 'video'
+      ? { video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: true }
+      : { audio: true };
+    _grabStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    const preferidos = tipo === 'video'
+      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+      : ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    _grabMime = preferidos.find(m => {
+      try { return MediaRecorder.isTypeSupported(m); } catch { return false; }
+    }) || '';
+
+    _grabRecorder = new MediaRecorder(_grabStream, _grabMime ? { mimeType: _grabMime } : {});
+    _grabChunks = [];
+    _grabRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) _grabChunks.push(e.data); };
+    _grabRecorder.onstop = () => _onGrabStop(tipo, ctx);
+    _grabRecorder.start(100);
+
+    ids.btns.style.display = 'none';
+    ids.label.textContent = tipo === 'video' ? 'Grabando video...' : 'Grabando audio...';
+    ids.estado.style.display = '';
+    if (tipo === 'video') {
+      ids.preview.style.display = '';
+      ids.preview.srcObject = _grabStream;
+    }
+    _grabSecs = 0;
+    ids.timer.textContent = '0:00';
+    _grabTimer = setInterval(() => {
+      _grabSecs++;
+      const m = Math.floor(_grabSecs / 60), s = _grabSecs % 60;
+      ids.timer.textContent = m + ':' + String(s).padStart(2, '0');
+    }, 1000);
+
+  } catch (err) {
+    _grabStream?.getTracks().forEach(t => t.stop());
+    _grabStream = null;
+    _grabRecorder = null;
+    const recurso = tipo === 'video' ? 'cámara/micrófono' : 'micrófono';
+    let msg = `No se pudo acceder al ${recurso}: ${err.message}`;
+    if (err.name === 'NotAllowedError') {
+      msg = `Permiso denegado. Haz clic en el ícono de ${recurso} en la barra de direcciones y permite el acceso.`;
+    } else if (err.name === 'NotFoundError') {
+      msg = `No se encontró ${recurso === 'micrófono' ? 'un micrófono' : 'cámara ni micrófono'} en este dispositivo.`;
+    }
+    showAlert(alertCercano, msg, 'error');
+    // Hacer scroll para que el error sea visible
+    document.getElementById(alertCercano)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function detenerGrabacion(ctx = 'main') {
+  if (!_grabRecorder) return;
+  clearInterval(_grabTimer);
+  _grabTimer = null;
+  _grabRecorder.stop();
+  _grabStream.getTracks().forEach(t => t.stop());
+  const ids = _grabIds(ctx);
+  ids.preview.srcObject = null;
+  ids.preview.style.display = 'none';
+  ids.estado.style.display = 'none';
+  ids.btns.style.display = '';
+}
+
+async function _onGrabStop(tipo, ctx) {
+  const mime = _grabMime || (tipo === 'video' ? 'video/webm' : 'audio/webm');
+  const blob = new Blob(_grabChunks, { type: mime });
+  _grabRecorder = null;
+  _grabChunks = [];
+  _grabStream = null;
+
+  const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.mp4' : '.webm';
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -1);
+  const filename = `grabacion_${tipo}_${ts}${ext}`;
+
+  const formData = new FormData();
+  formData.append('file', blob, filename);
+
+  if (ctx === 'edit') {
+    const info = document.getElementById('edit-upload-info');
+    info.textContent = 'Subiendo grabación…';
+    info.style.display = '';
+    try {
+      const res = await fetch(`${API}/media/subir`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.status);
+      document.getElementById('edit-url-media').value = data.url;
+      document.getElementById('edit-tipo-media').value = data.tipo_media;
+      info.textContent = `${ICON_MAP[data.tipo_media] || '📎'} ${filename} (${(data.bytes / 1024).toFixed(0)} KB)`;
+      info.style.color = 'var(--color-green)';
+    } catch (err) {
+      info.textContent = '❌ Error al subir: ' + err.message;
+      info.style.color = 'var(--color-danger)';
+    }
+  } else {
+    const alertEl = document.getElementById('alert-upload');
+    const placeholder = document.getElementById('upload-placeholder');
+    const preview = document.getElementById('upload-preview');
+    placeholder.style.display = 'none';
+    preview.style.display = '';
+    document.getElementById('upload-nombre').textContent = filename;
+    document.getElementById('upload-tipo').textContent = 'Subiendo…';
+    alertEl.innerHTML = '';
+    try {
+      const res = await fetch(`${API}/media/subir`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.status);
+      document.getElementById('hid-url-media').value = data.url;
+      document.getElementById('hid-tipo-media').value = data.tipo_media;
+      document.getElementById('upload-nombre').textContent = filename;
+      document.getElementById('upload-tipo').textContent = `${ICON_MAP[data.tipo_media] || '📎'} ${data.tipo_media} · ${(data.bytes / 1024).toFixed(0)} KB`;
+      document.getElementById('upload-icon').textContent = ICON_MAP[data.tipo_media] || '📎';
+    } catch (err) {
+      placeholder.style.display = '';
+      preview.style.display = 'none';
+      alertEl.innerHTML = `<div class="alert alert-error">Error: ${err.message}</div>`;
+    }
+  }
+}
+
 // ---- Drag & drop sobre la zona (registrado en INIT) ----
 function initUploadZone() {
   const zone = document.getElementById('upload-zone');
@@ -1230,6 +1460,7 @@ function abrirModalEditar(id) {
 }
 
 function cerrarModalEditar() {
+  detenerGrabacion('edit');
   document.getElementById('modal-editar').style.display = 'none';
 }
 
@@ -1446,6 +1677,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Drag & drop en zona de subida
   initUploadZone();
+
+  // Cerrar combo de grupos al hacer clic fuera
+  document.addEventListener('mousedown', e => {
+    const wrap = document.getElementById('lista-grupos-drop');
+    const inp  = document.getElementById('inp-grupo-buscar');
+    if (wrap && !wrap.contains(e.target) && e.target !== inp) {
+      cerrarListaGrupos();
+    }
+  });
 
   // Enter en login y setup
   ['login-email','login-password'].forEach(id => {
