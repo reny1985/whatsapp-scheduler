@@ -590,3 +590,16 @@ async def verificar_numero_whatsapp(
         logger.warning("verificar-numero '%s': %s", digits, exc.detail)
 
     return {"jid": f"{digits}@s.whatsapp.net", "existe": None, "nombre": ""}
+
+
+@router.get("/debug/evolution")
+async def debug_evolution(user: Usuario = Depends(get_current_user)):
+    """Endpoint temporal de diagnóstico — verificar conectividad con Evolution API."""
+    import httpx, os
+    url = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{url}/", headers={"apikey": os.getenv("EVOLUTION_API_KEY", "")})
+        return {"url": url, "status": r.status_code, "ok": r.status_code == 200, "body": r.text[:100]}
+    except Exception as exc:
+        return {"url": url, "error": str(exc) or repr(exc), "type": type(exc).__name__}
