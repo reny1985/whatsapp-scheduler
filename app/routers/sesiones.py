@@ -124,53 +124,50 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
                 "qrcode": True,
                 "integration": "WHATSAPP-BAILEYS",
             },
-            # Sin token → usa EVOLUTION_KEY global (para operaciones admin)
         )
         logger.info(
             "Instancia '%s' creada en Evolution API. Respuesta: %s",
-            payload.instancia_evolution,
-            str(resp_evo)[:200],
+            payload.instancia_evolution, str(resp_evo)[:200],
         )
-        # Capturar el apikey propio de esta instancia.
-        # Evolution v2 puede devolverlo en distintos campos:
-        #   { hash: { apikey: "UUID" }, ... }
-        #   { apikey: "UUID", ... }
         token_instancia = (
             (resp_evo.get("hash") or {}).get("apikey")
             or resp_evo.get("apikey")
         )
         if token_instancia:
-            logger.info(
-                "✅ Token de instancia '%s' capturado: %s",
-                payload.instancia_evolution, token_instancia[:8] + "..."
-            )
+            logger.info("✅ Token instancia '%s': %s...", payload.instancia_evolution, token_instancia[:8])
         else:
-            logger.warning(
-                "⚠️  No se pudo extraer token de la respuesta para '%s'. "
-                "Respuesta completa: %s",
-                payload.instancia_evolution, resp_evo
-            )
+            logger.warning("⚠️ Sin token en respuesta para '%s': %s", payload.instancia_evolution, resp_evo)
 
     except HTTPException as exc:
-        # 409 Conflict = la instancia ya existe, no es un error fatal
         detail_str = str(exc.detail).lower()
         if "409" in str(exc.detail) or "already" in detail_str or "exists" in detail_str:
-            logger.info(
-                "Instancia '%s' ya existe en Evolution API, continuando.",
-                payload.instancia_evolution
-            )
+            # La instancia ya existe en Evolution — recuperar su token
+            logger.info("Instancia '%s' ya existe, recuperando token.", payload.instancia_evolution)
+            try:
+                instances = await _evo_get(
+                    f"/instance/fetchInstances?instanceName={payload.instancia_evolution}"
+                )
+                if isinstance(instances, list) and instances:
+                    inst_data = instances[0]
+                    token_instancia = (
+                        (inst_data.get("instance") or {}).get("apikey")
+                        or inst_data.get("apikey")
+                        or (inst_data.get("hash") or {}).get("apikey")
+                    )
+                    if token_instancia:
+                        logger.info("✅ Token recuperado para '%s'", payload.instancia_evolution)
+            except Exception as e:
+                logger.warning("No se pudo recuperar token de instancia existente: %s", e)
         else:
-            logger.warning(
-                "Evolution API al crear instancia '%s': %s",
-                payload.instancia_evolution, exc.detail
+            # Error real de Evolution API → informar al usuario
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Evolution API no pudo crear la instancia: {exc.detail}",
             )
-        # Continuamos aunque falle — el QR se puede obtener después
     except Exception as exc:
-        logger.warning(
-            "No se pudo conectar con Evolution API al crear '%s': %s",
-            payload.instancia_evolution, exc
-        )
-        # No bloqueamos la creación en la BD
+        # Evolution no disponible — crear sesión en BD de todas formas
+        # (el usuario puede obtener el QR cuando Evolution esté accesible)
+        logger.warning("Evolution API no disponible al crear '%s': %s", payload.instancia_evolution, exc)
 
     # 4. Guardar sesión en la BD con el token capturado
     data = payload.model_dump()
@@ -514,7 +511,7 @@ async def listar_contactos(
 ):
     """
     Devuelve la agenda de contactos desde Evolution API.
-    POST /chat/findContacts/{instance} con where:{} devuelve todos los contactos.
+    Evolution v1.x: GET /chat/findContacts/{instance}?where={"key":{"remoteJid":""}}
     Solo retorna contactos con JID @s.whatsapp.net (números personales).
     """
     sesion = await db.get(SesionWhatsApp, id_sesion)
@@ -522,13 +519,22 @@ async def listar_contactos(
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
     try:
-        data = await _evo_post(
-            f"/chat/findContacts/{sesion.instancia_evolution}",
-            {"where": {}},
-            token=sesion.token_autorizacion,
-        )
-    except HTTPException as exc:
-        raise exc
+        import json as _json
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"{EVOLUTION_URL}/chat/findContacts/{sesion.instancia_evolution}",
+                headers=_evo_headers(sesion.token_autorizacion),
+                params={"where": _json.dumps({"key": {"remoteJid": ""}})},
+            )
+        logger.debug("EVO GET findContacts → %s | %s", r.status_code, r.text[:200])
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Evolution API error {r.status_code}: {r.text[:200]}",
+            )
+        data = r.json() if r.text.strip() else []
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

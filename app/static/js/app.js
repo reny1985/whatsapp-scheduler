@@ -674,7 +674,8 @@ async function onSesionChange() {
   const sel = document.getElementById('sel-sesion');
   const hidSesion = document.getElementById('hid-sesion');
   if (hidSesion && sel) hidSesion.value = sel.value;
-  _contactosCache = [];  // forzar recarga al cambiar de sesión
+  _contactosCache = [];
+  _contactosCargados = false;  // forzar recarga al cambiar de sesión
   // recargar grupos con la nueva sesión
   const selGrupo = document.getElementById('sel-grupo');
   if (selGrupo) {
@@ -762,6 +763,7 @@ async function resolverEnlaceGrupo() {
 // ---- Agenda de contactos ----
 
 let _contactosCache = [];
+let _contactosCargados = false;
 let _panelContactosAbierto = false;
 
 async function togglePanelContactos() {
@@ -771,7 +773,7 @@ async function togglePanelContactos() {
   panel.style.display = _panelContactosAbierto ? '' : 'none';
   if (_panelContactosAbierto) {
     document.getElementById('inp-buscar-contacto')?.focus();
-    if (!_contactosCache.length) await cargarContactos();
+    if (!_contactosCargados) await cargarContactos();
     else renderContactos(_contactosCache);
   }
 }
@@ -786,9 +788,14 @@ async function cargarContactos() {
   lista.innerHTML = '<div style="padding:12px 14px"><div class="spinner"></div></div>';
   try {
     _contactosCache = await apiFetch(`/sesiones/${sesionActiva.id_sesion}/contactos`);
+    _contactosCargados = true;
     renderContactos(_contactosCache);
   } catch (e) {
-    lista.innerHTML = `<p class="text-muted" style="font-size:.82rem;padding:10px 14px">Error: ${e.message}</p>`;
+    _contactosCargados = false;
+    lista.innerHTML = `<div style="padding:12px 14px">
+      <p class="text-muted" style="font-size:.82rem;margin:0 0 10px">Error al cargar contactos: ${e.message}</p>
+      <button class="btn btn-sm btn-secondary" onclick="usarNumeroManual()" style="width:100%">Ingresar número manualmente</button>
+    </div>`;
   }
 }
 
@@ -806,7 +813,19 @@ function renderContactos(lista) {
   const el = document.getElementById('lista-contactos');
   if (!el) return;
   if (!lista.length) {
-    el.innerHTML = '<p class="text-muted" style="font-size:.82rem;padding:10px 14px">Sin resultados.</p>';
+    // Si no hay contactos en caché (no es filtrado), ofrecer entrada manual
+    const esFiltrando = document.getElementById('inp-buscar-contacto')?.value?.trim().length > 0;
+    if (!esFiltrando && !_contactosCache.length) {
+      el.innerHTML = `
+        <div style="padding:12px 14px">
+          <p class="text-muted" style="font-size:.82rem;margin:0 0 10px">Sin contactos disponibles.</p>
+          <button class="btn btn-sm btn-secondary" onclick="usarNumeroManual()" style="width:100%">
+            Ingresar número manualmente
+          </button>
+        </div>`;
+    } else {
+      el.innerHTML = '<p class="text-muted" style="font-size:.82rem;padding:10px 14px">Sin resultados.</p>';
+    }
     return;
   }
   el.innerHTML = lista.slice(0, 100).map(c => `
@@ -822,6 +841,14 @@ function renderContactos(lista) {
         <div style="font-size:.75rem;color:var(--color-muted)">${c.numero}</div>
       </div>
     </div>`).join('');
+}
+
+function usarNumeroManual() {
+  const panel = document.getElementById('panel-contactos');
+  if (panel) panel.style.display = 'none';
+  _panelContactosAbierto = false;
+  const inp = document.getElementById('inp-numero');
+  if (inp) { inp.focus(); inp.value = ''; }
 }
 
 function seleccionarContacto(numero, nombre) {
