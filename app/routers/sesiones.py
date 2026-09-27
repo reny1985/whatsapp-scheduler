@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_admin
@@ -104,7 +104,17 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
         db.add(usuario)
         await db.flush()  # inserta sin commit para que la FK funcione
 
-    # 2. Crear la instancia en Evolution API con la clave global (admin)
+    # 2. Validar límite de sesiones por usuario (máx. 2)
+    count_res = await db.execute(
+        select(func.count()).where(SesionWhatsApp.id_usuario == payload.id_usuario)
+    )
+    if (count_res.scalar() or 0) >= 2:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Límite alcanzado: máximo 2 cuentas de WhatsApp por usuario. Elimina una sesión existente para agregar otra.",
+        )
+
+    # 3. Crear la instancia en Evolution API
     token_instancia = None
     try:
         resp_evo = await _evo_post(
@@ -162,7 +172,7 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
         )
         # No bloqueamos la creación en la BD
 
-    # 3. Guardar sesión en la BD con el token capturado
+    # 4. Guardar sesión en la BD con el token capturado
     data = payload.model_dump()
     # Sobreescribir token_autorizacion con el que capturamos de Evolution
     if token_instancia:
@@ -494,6 +504,47 @@ async def resolver_enlace_grupo(
             codigo, instancia, exc
         )
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/{id_sesion}/contactos")
+async def listar_contactos(
+    id_sesion: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    """
+    Devuelve la agenda de contactos desde Evolution API.
+    POST /chat/findContacts/{instance} con where:{} devuelve todos los contactos.
+    Solo retorna contactos con JID @s.whatsapp.net (números personales).
+    """
+    sesion = await db.get(SesionWhatsApp, id_sesion)
+    if not sesion:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+
+    try:
+        data = await _evo_post(
+            f"/chat/findContacts/{sesion.instancia_evolution}",
+            {"where": {}},
+            token=sesion.token_autorizacion,
+        )
+    except HTTPException as exc:
+        raise exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    contactos = []
+    raw = data if isinstance(data, list) else (data.get("contacts") or data.get("data") or [])
+    for c in raw:
+        jid = c.get("id") or c.get("jid") or ""
+        if not jid or "@s.whatsapp.net" not in jid:
+            continue
+        nombre = c.get("name") or c.get("pushName") or c.get("notify") or ""
+        numero = jid.replace("@s.whatsapp.net", "")
+        contactos.append({"jid": jid, "nombre": nombre, "numero": numero})
+
+    contactos.sort(key=lambda x: (x["nombre"].lower() if x["nombre"] else "zzz" + x["numero"]))
+    logger.info("Contactos para '%s': %d", sesion.instancia_evolution, len(contactos))
+    return contactos
 
 
 @router.post("/{id_sesion}/verificar-numero")

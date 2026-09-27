@@ -26,6 +26,11 @@ _STEPS = [
     )
     """,
     "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol VARCHAR(20) NOT NULL DEFAULT 'admin'",
+    "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email_verificado BOOLEAN NOT NULL DEFAULT FALSE",
+    # Los usuarios existentes (que ya configuraron su cuenta manualmente) se marcan como verificados
+    "UPDATE usuarios SET email_verificado = TRUE WHERE password_hash != 'piloto-no-auth' AND email_verificado = FALSE",
+    "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS codigo_verificacion VARCHAR(10)",
+    "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS codigo_expira_en TIMESTAMPTZ",
 
     # ── sesiones_whatsapp ─────────────────────────────────────────────────
     """

@@ -1,7 +1,17 @@
 """
 routers/auth.py
-Login, logout, perfil y setup inicial del primer admin.
+Login, logout, perfil, setup inicial y verificación de correo.
 """
+import logging
+import os
+import random
+import smtplib
+import asyncio
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
@@ -18,8 +28,63 @@ from app.database import get_db
 from app.models import Usuario
 from app.schemas import PILOTO_ID_USUARIO
 
+logger = logging.getLogger("whatsapp_scheduler")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+_email_executor = ThreadPoolExecutor(max_workers=2)
+
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
+APP_NAME  = os.getenv("APP_NAME", "WhatsApp Scheduler")
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _generar_codigo() -> str:
+    return str(random.randint(100000, 999999))
+
+
+def _enviar_email_sync(to: str, codigo: str) -> None:
+    if not SMTP_USER or not SMTP_PASS:
+        logger.warning("SMTP no configurado — código %s para %s (no enviado)", codigo, to)
+        return
+
+    asunto = f"[{APP_NAME}] Tu código de verificación: {codigo}"
+    cuerpo = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+      <h2 style="color:#25d366">{APP_NAME}</h2>
+      <p>Tu código de verificación es:</p>
+      <div style="font-size:2.5rem;font-weight:700;letter-spacing:.3em;color:#111;
+                  background:#f4f4f4;padding:20px;text-align:center;border-radius:8px">
+        {codigo}
+      </div>
+      <p style="color:#888;font-size:.85rem;margin-top:16px">
+        Válido por 30 minutos. Si no solicitaste este código, ignora este mensaje.
+      </p>
+    </div>
+    """
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = asunto
+    msg["From"]    = SMTP_FROM or SMTP_USER
+    msg["To"]      = to
+    msg.attach(MIMEText(cuerpo, "html", "utf-8"))
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as srv:
+        srv.starttls()
+        srv.login(SMTP_USER, SMTP_PASS)
+        srv.sendmail(SMTP_FROM or SMTP_USER, to, msg.as_string())
+    logger.info("Código de verificación enviado a %s", to)
+
+
+async def _enviar_email(to: str, codigo: str) -> None:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_email_executor, _enviar_email_sync, to, codigo)
+
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -30,6 +95,13 @@ class SetupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
 
+
+class VerificarCodigoRequest(BaseModel):
+    email: EmailStr
+    codigo: str = Field(min_length=6, max_length=6)
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/login")
 async def login(
@@ -44,6 +116,12 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email o contraseña incorrectos",
+        )
+
+    if not user.email_verificado:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="email_no_verificado",
         )
 
     token = create_access_token(user.id_usuario, user.rol)
@@ -73,6 +151,7 @@ async def setup(payload: SetupRequest, db: AsyncSession = Depends(get_db)):
     """
     Configura el primer admin. Solo funciona mientras el usuario piloto
     tenga la contraseña placeholder 'piloto-no-auth'.
+    Después del registro envía un código de verificación por email.
     """
     user = await db.get(Usuario, PILOTO_ID_USUARIO)
 
@@ -88,11 +167,17 @@ async def setup(payload: SetupRequest, db: AsyncSession = Depends(get_db)):
     if existing and existing.id_usuario != PILOTO_ID_USUARIO:
         raise HTTPException(status_code=400, detail="Email ya en uso")
 
+    codigo = _generar_codigo()
+    expira = datetime.now(timezone.utc) + timedelta(minutes=30)
+
     if user:
-        user.email = payload.email
-        user.password_hash = hash_password(payload.password)
-        user.rol = "admin"
-        user.estado_suscripcion = "activa"
+        user.email                = payload.email
+        user.password_hash        = hash_password(payload.password)
+        user.rol                  = "admin"
+        user.estado_suscripcion   = "activa"
+        user.email_verificado     = False
+        user.codigo_verificacion  = codigo
+        user.codigo_expira_en     = expira
     else:
         user = Usuario(
             id_usuario=PILOTO_ID_USUARIO,
@@ -100,8 +185,102 @@ async def setup(payload: SetupRequest, db: AsyncSession = Depends(get_db)):
             password_hash=hash_password(payload.password),
             rol="admin",
             estado_suscripcion="activa",
+            email_verificado=False,
+            codigo_verificacion=codigo,
+            codigo_expira_en=expira,
         )
         db.add(user)
 
     await db.commit()
-    return {"ok": True, "email": payload.email}
+
+    # Enviar email en background (no bloquea la respuesta)
+    asyncio.create_task(_enviar_email(payload.email, codigo))
+
+    return {"ok": True, "email": payload.email, "verificacion_requerida": True}
+
+
+@router.post("/enviar-codigo")
+async def enviar_codigo(
+    payload: BaseModel,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reenvía el código de verificación. Body: { email }"""
+    # Usamos un modelo simple inline
+    raise HTTPException(status_code=400, detail="Usa /auth/reenviar-codigo con {email}")
+
+
+@router.post("/reenviar-codigo")
+async def reenviar_codigo(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    email = str(body.get("email", "")).strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email requerido")
+
+    res = await db.execute(select(Usuario).where(Usuario.email == email))
+    user = res.scalar_one_or_none()
+    if not user:
+        # No revelar si el email existe o no
+        return {"ok": True}
+
+    if user.email_verificado:
+        raise HTTPException(status_code=400, detail="El correo ya está verificado")
+
+    codigo = _generar_codigo()
+    user.codigo_verificacion = codigo
+    user.codigo_expira_en    = datetime.now(timezone.utc) + timedelta(minutes=30)
+    await db.commit()
+
+    asyncio.create_task(_enviar_email(email, codigo))
+    return {"ok": True}
+
+
+@router.post("/verificar-codigo")
+async def verificar_codigo(
+    payload: VerificarCodigoRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Verifica el código de 6 dígitos enviado por email.
+    Si es correcto, marca el correo como verificado y hace login automático.
+    """
+    res = await db.execute(select(Usuario).where(Usuario.email == payload.email))
+    user = res.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Código incorrecto o expirado")
+
+    if user.email_verificado:
+        # Ya verificado, hacer login directo
+        token = create_access_token(user.id_usuario, user.rol)
+        response.set_cookie(
+            key="access_token", value=token, httponly=True, samesite="lax",
+            max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
+        )
+        return {"ok": True, "rol": user.rol, "email": user.email}
+
+    ahora = datetime.now(timezone.utc)
+    expira = user.codigo_expira_en
+    if expira and expira.tzinfo is None:
+        expira = expira.replace(tzinfo=timezone.utc)
+
+    if (
+        user.codigo_verificacion != payload.codigo
+        or not expira
+        or ahora > expira
+    ):
+        raise HTTPException(status_code=400, detail="Código incorrecto o expirado")
+
+    user.email_verificado    = True
+    user.codigo_verificacion = None
+    user.codigo_expira_en    = None
+    await db.commit()
+
+    token = create_access_token(user.id_usuario, user.rol)
+    response.set_cookie(
+        key="access_token", value=token, httponly=True, samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
+    )
+    return {"ok": True, "rol": user.rol, "email": user.email}

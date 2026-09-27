@@ -60,6 +60,30 @@
       </p>
     </div>
 
+    <!-- Verificación de email -->
+    <div id="auth-verify-panel" style="display:none">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:2.5rem;margin-bottom:8px">📧</div>
+        <h2 style="margin:0;font-size:1.2rem;font-weight:600">Verifica tu correo</h2>
+        <p style="margin:6px 0 0;color:var(--color-muted);font-size:.83rem" id="verify-email-hint">Ingresa el código de 6 dígitos enviado a tu correo</p>
+      </div>
+      <div id="alert-verify"></div>
+      <div class="form-group">
+        <label class="form-label">Código de verificación</label>
+        <input id="verify-codigo" class="form-control" type="text" inputmode="numeric" pattern="[0-9]{6}"
+               maxlength="6" placeholder="123456" autocomplete="one-time-code"
+               style="font-size:1.4rem;letter-spacing:.3em;text-align:center" />
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:4px" id="btn-verify" onclick="verificarCodigo()">Verificar</button>
+      <p style="text-align:center;margin-top:16px;font-size:.82rem;color:var(--color-muted)">
+        ¿No recibiste el código?
+        <button type="button" style="background:none;border:none;color:var(--color-green);cursor:pointer;font-size:.82rem;padding:0" onclick="reenviarCodigo()">Reenviar</button>
+      </p>
+      <p style="text-align:center;margin-top:8px;font-size:.82rem">
+        <button type="button" style="background:none;border:none;color:var(--color-muted);cursor:pointer;font-size:.82rem;padding:0" onclick="mostrarLogin()">Volver al login</button>
+      </p>
+    </div>
+
   </div>
 </div>
 
@@ -238,10 +262,25 @@
               <button type="button" id="btn-verificar-numero" class="btn btn-secondary btn-sm" onclick="verificarNumeroWA()" style="white-space:nowrap;padding:9px 14px">
                 Verificar
               </button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="togglePanelContactos()" style="white-space:nowrap;padding:9px 14px" title="Buscar en tu agenda">
+                👤 Agenda
+              </button>
             </div>
             <div id="numero-verificado" style="display:none;margin-top:8px;font-size:.82rem;padding:8px 12px;border-radius:6px"></div>
+
+            <!-- Panel agenda de contactos -->
+            <div id="panel-contactos" style="display:none;border:1px solid var(--color-border);border-radius:8px;margin-top:10px;overflow:hidden">
+              <div style="padding:10px 14px;background:var(--color-surface);display:flex;gap:8px;align-items:center">
+                <input id="inp-buscar-contacto" class="form-control" placeholder="Buscar por nombre o número..." style="flex:1;padding:7px 12px;font-size:.85rem" oninput="filtrarContactos(this.value)" autocomplete="off" />
+                <button type="button" class="btn btn-sm btn-secondary" onclick="togglePanelContactos()">✕</button>
+              </div>
+              <div id="lista-contactos" style="max-height:220px;overflow-y:auto">
+                <p class="text-muted" style="font-size:.82rem;padding:10px 14px">Cargando contactos...</p>
+              </div>
+            </div>
+
             <p style="font-size:.78rem;color:var(--color-muted);margin-top:6px">
-              Incluye el código de país sin el +. Ejemplo Ecuador: <strong>593</strong>961409996. Pulsa <em>Verificar</em> para comprobar si tiene WhatsApp.
+              Incluye el código de país sin el +. Ejemplo Ecuador: <strong>593</strong>961409996. Pulsa <em>Verificar</em> para comprobar si tiene WhatsApp o <em>Agenda</em> para buscar en tus contactos.
             </p>
           </div>
 

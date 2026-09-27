@@ -19,13 +19,29 @@ function mostrarAuthScreen(show = true) {
 function mostrarLogin() {
   document.getElementById('auth-login-panel').style.display = '';
   document.getElementById('auth-setup-panel').style.display = 'none';
+  document.getElementById('auth-verify-panel').style.display = 'none';
   document.getElementById('alert-login').innerHTML = '';
 }
 
 function mostrarSetup() {
   document.getElementById('auth-login-panel').style.display = 'none';
   document.getElementById('auth-setup-panel').style.display = '';
+  document.getElementById('auth-verify-panel').style.display = 'none';
   document.getElementById('alert-setup').innerHTML = '';
+}
+
+let _verifyEmail = '';
+
+function mostrarVerify(email) {
+  _verifyEmail = email;
+  document.getElementById('auth-login-panel').style.display = 'none';
+  document.getElementById('auth-setup-panel').style.display = 'none';
+  document.getElementById('auth-verify-panel').style.display = '';
+  document.getElementById('verify-email-hint').textContent =
+    `Ingresa el código de 6 dígitos enviado a ${email}`;
+  document.getElementById('verify-codigo').value = '';
+  document.getElementById('alert-verify').innerHTML = '';
+  document.getElementById('verify-codigo').focus();
 }
 
 async function checkAuth() {
@@ -61,7 +77,11 @@ async function loginUser() {
     actualizarUISegunRol();
     navigate('dashboard');
   } catch (e) {
-    showAlert('alert-login', e.data?.detail || 'Credenciales incorrectas', 'error');
+    if (e.data?.detail === 'email_no_verificado') {
+      mostrarVerify(email);
+    } else {
+      showAlert('alert-login', e.data?.detail || 'Credenciales incorrectas', 'error');
+    }
   } finally {
     btn.disabled = false; btn.textContent = 'Iniciar sesión';
   }
@@ -81,11 +101,7 @@ async function setupUser() {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    showAlert('alert-setup', '✅ Cuenta creada. Ahora inicia sesión.', 'success');
-    setTimeout(() => {
-      document.getElementById('login-email').value = email;
-      mostrarLogin();
-    }, 1200);
+    mostrarVerify(email);
   } catch (e) {
     showAlert('alert-setup', e.data?.detail || e.message, 'error');
   } finally {
@@ -98,6 +114,43 @@ async function logoutUser() {
   currentUser = null;
   mostrarAuthScreen(true);
   mostrarLogin();
+}
+
+async function verificarCodigo() {
+  const codigo = document.getElementById('verify-codigo').value.trim();
+  if (codigo.length !== 6) {
+    showAlert('alert-verify', 'El código debe tener 6 dígitos', 'error');
+    return;
+  }
+  const btn = document.getElementById('btn-verify');
+  btn.disabled = true; btn.textContent = 'Verificando...';
+  try {
+    const data = await apiFetch('/auth/verificar-codigo', {
+      method: 'POST',
+      body: JSON.stringify({ email: _verifyEmail, codigo }),
+    });
+    currentUser = { email: data.email, rol: data.rol };
+    mostrarAuthScreen(false);
+    actualizarUISegunRol();
+    navigate('dashboard');
+  } catch (e) {
+    showAlert('alert-verify', e.data?.detail || 'Código incorrecto o expirado', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Verificar';
+  }
+}
+
+async function reenviarCodigo() {
+  if (!_verifyEmail) return;
+  try {
+    await apiFetch('/auth/reenviar-codigo', {
+      method: 'POST',
+      body: JSON.stringify({ email: _verifyEmail }),
+    });
+    showAlert('alert-verify', 'Código reenviado. Revisa tu correo.', 'success');
+  } catch (e) {
+    showAlert('alert-verify', e.data?.detail || 'Error al reenviar', 'error');
+  }
 }
 
 function actualizarUISegunRol() {
@@ -621,6 +674,7 @@ async function onSesionChange() {
   const sel = document.getElementById('sel-sesion');
   const hidSesion = document.getElementById('hid-sesion');
   if (hidSesion && sel) hidSesion.value = sel.value;
+  _contactosCache = [];  // forzar recarga al cambiar de sesión
   // recargar grupos con la nueva sesión
   const selGrupo = document.getElementById('sel-grupo');
   if (selGrupo) {
@@ -702,6 +756,97 @@ async function resolverEnlaceGrupo() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Resolver';
+  }
+}
+
+// ---- Agenda de contactos ----
+
+let _contactosCache = [];
+let _panelContactosAbierto = false;
+
+async function togglePanelContactos() {
+  const panel = document.getElementById('panel-contactos');
+  if (!panel) return;
+  _panelContactosAbierto = !_panelContactosAbierto;
+  panel.style.display = _panelContactosAbierto ? '' : 'none';
+  if (_panelContactosAbierto) {
+    document.getElementById('inp-buscar-contacto')?.focus();
+    if (!_contactosCache.length) await cargarContactos();
+    else renderContactos(_contactosCache);
+  }
+}
+
+async function cargarContactos() {
+  const lista = document.getElementById('lista-contactos');
+  if (!lista) return;
+  if (!sesionActiva) {
+    lista.innerHTML = '<p class="text-muted" style="font-size:.82rem;padding:10px 14px">Sin sesión WhatsApp activa.</p>';
+    return;
+  }
+  lista.innerHTML = '<div style="padding:12px 14px"><div class="spinner"></div></div>';
+  try {
+    _contactosCache = await apiFetch(`/sesiones/${sesionActiva.id_sesion}/contactos`);
+    renderContactos(_contactosCache);
+  } catch (e) {
+    lista.innerHTML = `<p class="text-muted" style="font-size:.82rem;padding:10px 14px">Error: ${e.message}</p>`;
+  }
+}
+
+function filtrarContactos(query) {
+  const q = query.toLowerCase().trim();
+  const filtrados = q
+    ? _contactosCache.filter(c =>
+        c.nombre.toLowerCase().includes(q) || c.numero.includes(q)
+      )
+    : _contactosCache;
+  renderContactos(filtrados);
+}
+
+function renderContactos(lista) {
+  const el = document.getElementById('lista-contactos');
+  if (!el) return;
+  if (!lista.length) {
+    el.innerHTML = '<p class="text-muted" style="font-size:.82rem;padding:10px 14px">Sin resultados.</p>';
+    return;
+  }
+  el.innerHTML = lista.slice(0, 100).map(c => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--color-border);cursor:pointer"
+         onclick="seleccionarContacto('${c.numero}','${(c.nombre || '').replace(/'/g, '&#39;')}')"
+         onmouseover="this.style.background='rgba(255,255,255,.04)'"
+         onmouseout="this.style.background=''">
+      <div style="width:32px;height:32px;border-radius:50%;background:var(--color-surface2);display:flex;align-items:center;justify-content:center;font-size:.8rem;flex-shrink:0">
+        ${c.nombre ? c.nombre[0].toUpperCase() : '?'}
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.85rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nombre || '<span style="color:var(--color-muted)">Sin nombre</span>'}</div>
+        <div style="font-size:.75rem;color:var(--color-muted)">${c.numero}</div>
+      </div>
+    </div>`).join('');
+}
+
+function seleccionarContacto(numero, nombre) {
+  const inp = document.getElementById('inp-numero');
+  if (inp) {
+    inp.value = numero;
+    inp.dispatchEvent(new Event('input'));
+  }
+  // Cerrar panel
+  const panel = document.getElementById('panel-contactos');
+  if (panel) panel.style.display = 'none';
+  _panelContactosAbierto = false;
+  // Resetear búsqueda
+  const search = document.getElementById('inp-buscar-contacto');
+  if (search) search.value = '';
+  renderContactos(_contactosCache);
+  // Mostrar nombre del contacto seleccionado
+  if (nombre) {
+    const verif = document.getElementById('numero-verificado');
+    if (verif) {
+      verif.style.display = '';
+      verif.style.background = 'rgba(83,189,235,.1)';
+      verif.style.color = 'var(--color-info)';
+      verif.innerHTML = `👤 Contacto seleccionado: <strong>${nombre}</strong>`;
+    }
   }
 }
 
@@ -1281,6 +1426,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   ['setup-email','setup-password'].forEach(id => {
     document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') setupUser(); });
+  });
+  document.getElementById('verify-codigo')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') verificarCodigo();
   });
 
   // Verificar autenticación antes de mostrar la app

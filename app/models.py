@@ -38,6 +38,11 @@ class Usuario(Base):
     estado_suscripcion: Mapped[str] = mapped_column(
         String(50), nullable=False, server_default=text("'prueba'")
     )
+    email_verificado: Mapped[bool] = mapped_column(
+        nullable=False, server_default=text("FALSE")
+    )
+    codigo_verificacion: Mapped[str | None] = mapped_column(String(10))
+    codigo_expira_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     fecha_registro: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )
