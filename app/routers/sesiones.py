@@ -117,10 +117,14 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
     # 3. Crear la instancia en Evolution API
     token_instancia = None
     try:
+        # Siempre pasar token explícito: Evolution v1.8.x falla al auto-generar
+        # el token cuando ya existe alguna instancia ("Token already exists").
+        token_generado = str(uuid.uuid4()).upper()
         resp_evo = await _evo_post(
             "/instance/create",
             {
                 "instanceName": payload.instancia_evolution,
+                "token": token_generado,
                 "qrcode": True,
                 "integration": "WHATSAPP-BAILEYS",
             },
@@ -165,9 +169,10 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
                 detail=f"Evolution API no pudo crear la instancia: {exc.detail}",
             )
     except Exception as exc:
-        # Evolution no disponible — crear sesión en BD de todas formas
-        # (el usuario puede obtener el QR cuando Evolution esté accesible)
-        logger.warning("Evolution API no disponible al crear '%s': %s", payload.instancia_evolution, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"No se pudo conectar con Evolution API: {exc}. Verifica que Evolution esté corriendo.",
+        )
 
     # 4. Guardar sesión en la BD con el token capturado
     data = payload.model_dump()
@@ -186,7 +191,11 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
 async def listar_sesiones(db: AsyncSession = Depends(get_db), _: Usuario = Depends(get_current_user)):
     """Lista todas las sesiones (un usuario = 1 sesión en la fase piloto)."""
     result = await db.execute(
-        select(SesionWhatsApp).order_by(SesionWhatsApp.fecha_creacion.desc())
+        select(SesionWhatsApp).order_by(
+            # conectado primero, luego por fecha de creación
+            SesionWhatsApp.estado_conexion.desc(),
+            SesionWhatsApp.fecha_creacion.desc(),
+        )
     )
     return result.scalars().all()
 
@@ -519,22 +528,13 @@ async def listar_contactos(
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
     try:
-        import json as _json
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(
-                f"{EVOLUTION_URL}/chat/findContacts/{sesion.instancia_evolution}",
-                headers=_evo_headers(sesion.token_autorizacion),
-                params={"where": _json.dumps({"key": {"remoteJid": ""}})},
-            )
-        logger.debug("EVO GET findContacts → %s | %s", r.status_code, r.text[:200])
-        if r.status_code >= 400:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Evolution API error {r.status_code}: {r.text[:200]}",
-            )
-        data = r.json() if r.text.strip() else []
-    except HTTPException:
-        raise
+        data = await _evo_post(
+            f"/chat/findContacts/{sesion.instancia_evolution}",
+            {"where": {}},
+            token=sesion.token_autorizacion,
+        )
+    except HTTPException as exc:
+        raise exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
