@@ -828,7 +828,10 @@ function renderContactos(lista) {
     }
     return;
   }
-  el.innerHTML = lista.slice(0, 100).map(c => `
+  const PAGE = 80;
+  let _offset = PAGE;
+
+  const renderItem = (c) => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--color-border);cursor:pointer"
          onclick="seleccionarContacto('${c.numero}','${(c.nombre || '').replace(/'/g, '&#39;')}')"
          onmouseover="this.style.background='rgba(255,255,255,.04)'"
@@ -840,7 +843,23 @@ function renderContactos(lista) {
         <div style="font-size:.85rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nombre || '<span style="color:var(--color-muted)">Sin nombre</span>'}</div>
         <div style="font-size:.75rem;color:var(--color-muted)">${c.numero}</div>
       </div>
-    </div>`).join('');
+    </div>`;
+
+  el.innerHTML = lista.slice(0, PAGE).map(renderItem).join('');
+
+  // Cargar más al llegar al final del scroll
+  el.onscroll = null;
+  if (lista.length > PAGE) {
+    el.onscroll = () => {
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+        const more = lista.slice(_offset, _offset + PAGE);
+        if (!more.length) { el.onscroll = null; return; }
+        el.insertAdjacentHTML('beforeend', more.map(renderItem).join(''));
+        _offset += PAGE;
+        if (_offset >= lista.length) el.onscroll = null;
+      }
+    };
+  }
 }
 
 function usarNumeroManual() {
