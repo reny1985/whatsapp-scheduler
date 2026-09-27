@@ -5,13 +5,10 @@ Login, logout, perfil, setup inicial y verificación de correo.
 import logging
 import os
 import random
-import smtplib
 import asyncio
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
@@ -31,14 +28,9 @@ from app.schemas import PILOTO_ID_USUARIO
 logger = logging.getLogger("whatsapp_scheduler")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_email_executor = ThreadPoolExecutor(max_workers=2)
-
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
-APP_NAME  = os.getenv("APP_NAME", "WhatsApp Scheduler")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM    = os.getenv("RESEND_FROM", "WhatsApp Scheduler <onboarding@resend.dev>")
+APP_NAME       = os.getenv("APP_NAME", "WhatsApp Scheduler")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -47,9 +39,9 @@ def _generar_codigo() -> str:
     return str(random.randint(100000, 999999))
 
 
-def _enviar_email_sync(to: str, codigo: str) -> None:
-    if not SMTP_USER or not SMTP_PASS:
-        logger.warning("SMTP no configurado — código %s para %s (no enviado)", codigo, to)
+async def _enviar_email(to: str, codigo: str) -> None:
+    if not RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY no configurada — código %s para %s (no enviado)", codigo, to)
         return
 
     asunto = f"[{APP_NAME}] Tu código de verificación: {codigo}"
@@ -66,22 +58,17 @@ def _enviar_email_sync(to: str, codigo: str) -> None:
       </p>
     </div>
     """
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = asunto
-    msg["From"]    = SMTP_FROM or SMTP_USER
-    msg["To"]      = to
-    msg.attach(MIMEText(cuerpo, "html", "utf-8"))
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as srv:
-        srv.starttls()
-        srv.login(SMTP_USER, SMTP_PASS)
-        srv.sendmail(SMTP_FROM or SMTP_USER, to, msg.as_string())
-    logger.info("Código de verificación enviado a %s", to)
-
-
-async def _enviar_email(to: str, codigo: str) -> None:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_email_executor, _enviar_email_sync, to, codigo)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={"from": RESEND_FROM, "to": [to], "subject": asunto, "html": cuerpo},
+            )
+            r.raise_for_status()
+        logger.info("Código de verificación enviado a %s via Resend", to)
+    except Exception as exc:
+        logger.error("Error enviando email a %s: %s", to, exc)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
