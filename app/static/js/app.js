@@ -620,7 +620,9 @@ let _pairingPolls = {};
 async function obtenerCodigoPairing() {
   const pais   = document.getElementById('sel-pais-code')?.value || '593';
   const telRaw = document.getElementById('inp-tel-code')?.value?.trim() || '';
-  const digits = telRaw.replace(/\D/g, '');
+  let digits = telRaw.replace(/\D/g, '');
+  // Quitar 0 inicial del número local (ej: Ecuador 0969... → 969...)
+  if (digits.startsWith('0')) digits = digits.slice(1);
 
   if (!digits || digits.length < 7) {
     showAlert('alert-sesion', 'Ingresa un número de teléfono válido', 'error');
