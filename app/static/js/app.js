@@ -5,6 +5,13 @@
 
 const API = window.location.origin;  // mismo origen que el backend
 
+// Nombre visible de una sesión: número de teléfono > nombre_sesion > instancia
+function _nombreSesion(s) {
+  if (s.numero_telefono) return '+' + s.numero_telefono;
+  if (s.nombre_sesion)   return s.nombre_sesion;
+  return s.instancia_evolution;
+}
+
 // ============================================================
 // AUTH
 // ============================================================
@@ -184,6 +191,22 @@ async function apiFetch(path, opts = {}) {
   return data;
 }
 
+// Devuelve "YYYY-MM-DDTHH:MM" en la zona horaria de Ecuador (America/Guayaquil)
+function _ecuadorNow() {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'America/Guayaquil',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  }).format(new Date()).replace(' ', 'T');
+}
+
+// Pre-rellena el campo inp-fecha con la hora actual de Ecuador
+function _prefillFecha() {
+  const inp = document.getElementById('inp-fecha');
+  if (!inp) return;
+  inp.value = _ecuadorNow();
+}
+
 function showAlert(containerId, msg, type = 'info') {
   const el = document.getElementById(containerId);
   if (!el) return;
@@ -271,7 +294,7 @@ function renderEstadoSesion() {
   el.innerHTML = `<div class="card-title">Sesiones WhatsApp</div>` +
     todasLasSesiones.map(s => `
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--color-border)">
-        <div class="text-mono" style="flex:1;min-width:120px;font-size:.82rem">${s.instancia_evolution}</div>
+        <div class="text-mono" style="flex:1;min-width:120px;font-size:.82rem">${_nombreSesion(s)}</div>
         <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
         ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-secondary" onclick="navigate('sesion')">QR</button>` : ''}
       </div>`).join('');
@@ -437,10 +460,10 @@ function renderPanelSesion() {
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="text-mono">${s.instancia_evolution}</span>
+            <span class="text-mono">${_nombreSesion(s)}</span>
             <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
           </div>
-          <div class="text-muted" style="font-size:.72rem;margin-top:3px">${s.id_sesion}</div>
+          ${!s.numero_telefono ? `<div class="text-muted" style="font-size:.72rem;margin-top:3px">Escaneando QR…</div>` : ''}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
@@ -456,13 +479,10 @@ function renderPanelSesion() {
   el.innerHTML = `
     ${tarjetas}
     <div class="card">
-      <div class="card-title">Añadir nueva sesión</div>
+      <div class="card-title">Añadir cuenta de WhatsApp</div>
       <div id="alert-sesion"></div>
-      <div class="form-group">
-        <label class="form-label">Nombre de instancia <span style="color:var(--color-muted);font-weight:400">(letras, números, guiones)</span></label>
-        <input id="input-instancia" class="form-control" placeholder="mi-instancia-02" autocomplete="off" />
-      </div>
-      <button class="btn btn-primary" onclick="crearSesion()">Crear y obtener QR</button>
+      <button class="btn btn-primary" id="btn-crear-sesion" onclick="crearSesion()">Conectar nueva cuenta</button>
+      <div id="qr-nueva-sesion" style="display:none;margin-top:16px"></div>
     </div>`;
 }
 
@@ -533,10 +553,10 @@ async function verificarEstado(id_sesion) {
 }
 
 async function crearSesion() {
-  const instancia = document.getElementById('input-instancia')?.value?.trim();
-  if (!instancia) { showAlert('alert-sesion', 'Introduce el nombre de la instancia', 'error'); return; }
-  const btn = document.querySelector('[onclick="crearSesion()"]');
-  if (btn) { btn.disabled = true; btn.textContent = 'Creando...'; }
+  const btn = document.getElementById('btn-crear-sesion');
+  if (btn) { btn.disabled = true; btn.textContent = 'Conectando...'; }
+  // Nombre de instancia auto-generado (no visible para el usuario)
+  const instancia = 'wa-' + Date.now().toString(36);
   try {
     const nueva = await apiFetch('/sesiones/', {
       method: 'POST',
@@ -550,7 +570,7 @@ async function crearSesion() {
       ? e.data.detail
       : Array.isArray(e.data?.detail) ? e.data.detail.map(d => d.msg).join('; ') : e.message;
     showAlert('alert-sesion', msg, 'error');
-    if (btn) { btn.disabled = false; btn.textContent = 'Crear y obtener QR'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Conectar nueva cuenta'; }
   }
 }
 
@@ -720,7 +740,7 @@ async function loadGrupos() {
       grpSesion.style.display = '';
       selSesion.innerHTML = todasLasSesiones.map(s =>
         `<option value="${s.id_sesion}" ${s.id_sesion === sesionActiva.id_sesion ? 'selected' : ''}>
-          ${s.instancia_evolution} (${s.estado_conexion})
+          ${_nombreSesion(s)} (${s.estado_conexion})
         </option>`
       ).join('');
     } else {
@@ -1283,6 +1303,16 @@ async function programarMensaje(e) {
     showAlert('alert-programar', 'Selecciona la fecha y hora de envío', 'error');
     return;
   }
+  // Verificar si la hora ya pasó (comparando con Ecuador UTC-5)
+  let forzar = false;
+  {
+    const fechaElegida = new Date(fechaHora + ':00-05:00');
+    if (fechaElegida <= new Date()) {
+      const ok = confirm('La hora seleccionada ya pasó. ¿Enviar ahora?');
+      if (!ok) return;
+      forzar = true;
+    }
+  }
   if (!idSesion) {
     showAlert('alert-programar', 'No hay sesión WhatsApp activa', 'error');
     return;
@@ -1305,6 +1335,7 @@ async function programarMensaje(e) {
       id_grupo: idGrupo,
       fecha_hora_disparo: fechaISO,
       recurrencia,
+      forzar,
     };
     if (texto) payload.texto_mensaje = texto;
     if (urlMedia && tipoMedia) {
@@ -1318,6 +1349,7 @@ async function programarMensaje(e) {
     });
     showAlert('alert-programar', '✅ Mensaje programado correctamente', 'success');
     form.reset();
+    _prefillFecha();
     limpiarAdjunto({ stopPropagation: () => {} });
     toggleDestino({ value: 'grupo' });  // resetear a grupo
     await loadGrupos();
@@ -1660,15 +1692,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', () => loadHistorial(Number(btn.dataset.dias)));
   });
 
-  // Fecha mínima = ahora + 2 min
-  const inpFecha = document.getElementById('inp-fecha');
-  if (inpFecha) {
-    const ahora = new Date(Date.now() + 2 * 60000);
-    const local = new Date(ahora.getTime() - ahora.getTimezoneOffset() * 60000)
-      .toISOString().slice(0, 16);
-    inpFecha.min = local;
-    inpFecha.value = local;
-  }
+  // Pre-fill fecha con hora actual Ecuador (UTC-5), funciona en Android/iOS/desktop
+  _prefillFecha();
 
   // Cerrar modal editar al hacer clic en el fondo
   document.getElementById('modal-editar')?.addEventListener('click', e => {

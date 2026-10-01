@@ -26,7 +26,7 @@ async def programar_mensaje(
     if not res.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
-    mensaje = MensajeProgramado(**payload.model_dump())
+    mensaje = MensajeProgramado(**payload.model_dump(exclude={'forzar'}))
     db.add(mensaje)
     await db.commit()
     await db.refresh(mensaje)

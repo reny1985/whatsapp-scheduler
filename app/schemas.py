@@ -58,6 +58,7 @@ class SesionWhatsAppRead(ORMBase):
     id_sesion: uuid.UUID
     id_usuario: uuid.UUID
     nombre_sesion: str | None
+    numero_telefono: str | None
     instancia_evolution: str
     estado_conexion: EstadoConexion
     fecha_creacion: datetime
@@ -75,6 +76,7 @@ class MensajeProgramadoCreate(BaseModel):
     url_media: str | None = Field(default=None, max_length=2048)
     fecha_hora_disparo: AwareDatetime
     recurrencia: Recurrencia = "none"
+    forzar: bool = False
 
     @field_validator("id_grupo")
     @classmethod
@@ -97,19 +99,14 @@ class MensajeProgramadoCreate(BaseModel):
         v = v.strip()
         return v or None
 
-    @field_validator("fecha_hora_disparo")
-    @classmethod
-    def validar_fecha_futura(cls, v: datetime) -> datetime:
-        if v <= datetime.now(timezone.utc):
-            raise ValueError("fecha_hora_disparo debe ser una fecha futura")
-        return v
-
     @model_validator(mode="after")
     def validar_contenido(self) -> "MensajeProgramadoCreate":
         if (self.tipo_media is None) != (self.url_media is None):
             raise ValueError("tipo_media y url_media deben enviarse juntos")
         if self.texto_mensaje is None and self.url_media is None:
             raise ValueError("Se requiere texto_mensaje o un adjunto (url_media)")
+        if not self.forzar and self.fecha_hora_disparo <= datetime.now(timezone.utc):
+            raise ValueError("fecha_hora_disparo debe ser una fecha futura")
         return self
 
     def to_orm_dict(self) -> dict:
