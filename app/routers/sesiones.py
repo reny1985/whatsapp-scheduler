@@ -725,25 +725,30 @@ async def listar_grupos(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db)
     if not sesion:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
-    # Leer caché de BD
-    result = await db.execute(
-        select(text("id_grupo, subject, size"))
-        .select_from(text("grupos_whatsapp"))
-        .where(text("id_sesion = :sid"))
-        .order_by(text("lower(subject)"))
-        .params(sid=str(id_sesion))
-    )
-    grupos = [
-        {"id": row[0], "subject": row[1], "size": row[2] or 0}
-        for row in result.fetchall()
-    ]
+    async def _leer_cache():
+        r = await db.execute(
+            select(text("id_grupo, subject, size"))
+            .select_from(text("grupos_whatsapp"))
+            .where(text("id_sesion = :sid"))
+            .order_by(text("lower(subject)"))
+            .params(sid=str(id_sesion))
+        )
+        return [{"id": row[0], "subject": row[1], "size": row[2] or 0} for row in r.fetchall()]
 
-    # Refresco en background (no bloquea)
-    asyncio.create_task(
-        _refrescar_grupos_bg(id_sesion, sesion.instancia_evolution, sesion.token_autorizacion)
-    )
+    grupos = await _leer_cache()
 
-    logger.info("Grupos para '%s': %d (caché BD)", sesion.instancia_evolution, len(grupos))
+    if not grupos:
+        # Caché vacía (sesión nueva o limpiada) → fetch sincrónico para no devolver lista vacía
+        logger.info("Caché vacía para '%s', fetch sincrónico", sesion.instancia_evolution)
+        await _refrescar_grupos_bg(id_sesion, sesion.instancia_evolution, sesion.token_autorizacion)
+        grupos = await _leer_cache()
+    else:
+        # Caché con datos → devolver inmediatamente y refrescar en background
+        asyncio.create_task(
+            _refrescar_grupos_bg(id_sesion, sesion.instancia_evolution, sesion.token_autorizacion)
+        )
+
+    logger.info("Grupos para '%s': %d", sesion.instancia_evolution, len(grupos))
     return grupos
 
 
