@@ -481,7 +481,16 @@ function renderPanelSesion() {
     <div class="card">
       <div class="card-title">Añadir cuenta de WhatsApp</div>
       <div id="alert-sesion"></div>
-      <button class="btn btn-primary" id="btn-crear-sesion" onclick="crearSesion()">Conectar nueva cuenta</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${_esMobile() ? `
+          <button class="btn btn-primary" onclick="elegirMetodoPairing()">🔢 Vincular con código</button>
+          <button class="btn btn-secondary" onclick="crearSesion()">📷 Escanear QR</button>
+        ` : `
+          <button class="btn btn-primary" onclick="crearSesion()">📷 Escanear QR</button>
+          <button class="btn btn-secondary" onclick="elegirMetodoPairing()">🔢 Vincular con código</button>
+        `}
+      </div>
+      <div id="form-pairing-code" style="display:none;margin-top:16px"></div>
       <div id="qr-nueva-sesion" style="display:none;margin-top:16px"></div>
     </div>`;
 }
@@ -572,6 +581,162 @@ async function crearSesion() {
     showAlert('alert-sesion', msg, 'error');
     if (btn) { btn.disabled = false; btn.textContent = 'Conectar nueva cuenta'; }
   }
+}
+
+// ── Pairing code ─────────────────────────────────────────────────────────
+
+function _esMobile() {
+  return window.innerWidth <= 640 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function elegirMetodoPairing() {
+  const div = document.getElementById('form-pairing-code');
+  if (!div) return;
+  div.style.display = '';
+  div.innerHTML = `
+    <div class="form-group">
+      <label class="form-label">País</label>
+      <select id="sel-pais-code" class="form-control" style="max-width:260px">
+        <option value="593" selected>🇪🇨 Ecuador (+593)</option>
+        <option value="57">🇨🇴 Colombia (+57)</option>
+        <option value="51">🇵🇪 Perú (+51)</option>
+        <option value="56">🇨🇱 Chile (+56)</option>
+        <option value="54">🇦🇷 Argentina (+54)</option>
+        <option value="55">🇧🇷 Brasil (+55)</option>
+        <option value="52">🇲🇽 México (+52)</option>
+        <option value="1">🇺🇸 USA/Canada (+1)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Número de WhatsApp</label>
+      <input id="inp-tel-code" type="tel" class="form-control" placeholder="Ej: 0969829845" style="max-width:260px" />
+      <p style="font-size:.78rem;color:var(--color-muted);margin-top:4px">Sin código de país — solo el número local.</p>
+    </div>
+    <button class="btn btn-primary" id="btn-get-code" onclick="obtenerCodigoPairing()">Obtener código</button>`;
+}
+
+let _pairingPolls = {};
+
+async function obtenerCodigoPairing() {
+  const pais   = document.getElementById('sel-pais-code')?.value || '593';
+  const telRaw = document.getElementById('inp-tel-code')?.value?.trim() || '';
+  const digits = telRaw.replace(/\D/g, '');
+
+  if (!digits || digits.length < 7) {
+    showAlert('alert-sesion', 'Ingresa un número de teléfono válido', 'error');
+    return;
+  }
+  const numero = pais + digits;
+
+  const btn = document.getElementById('btn-get-code');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creando sesión...'; }
+
+  let idSesion = null;
+  try {
+    // 1. Crear instancia en Evolution + BD
+    const instancia = 'wa-' + Date.now().toString(36);
+    const nueva = await apiFetch('/sesiones/', {
+      method: 'POST',
+      body: JSON.stringify({ instancia_evolution: instancia }),
+    });
+    idSesion = nueva.id_sesion;
+
+    if (btn) btn.textContent = 'Obteniendo código...';
+
+    // 2. Solicitar pairing code
+    const resp = await apiFetch(`/sesiones/${idSesion}/pairing-code?numero=${numero}`);
+
+    // 3. Re-render para que aparezca la nueva sesión en la lista
+    await cargarSesionActiva();
+    renderPanelSesion();
+
+    // 4. Mostrar panel con el código
+    _mostrarPanelPairing(idSesion, resp.pairing_code, numero);
+
+    // 5. Polling de estado
+    _iniciarPollingPairing(idSesion);
+
+  } catch (e) {
+    const msg = e.data?.detail || e.message;
+    showAlert('alert-sesion', msg + (idSesion ? ' — puedes escanear el QR en su lugar.' : ''), 'error');
+    if (idSesion) {
+      await cargarSesionActiva();
+      renderPanelSesion();
+      setTimeout(() => mostrarQR(idSesion), 400);
+    }
+  }
+}
+
+function _mostrarPanelPairing(id_sesion, code, numero) {
+  const container = document.getElementById(`qr-container-${id_sesion}`);
+  if (!container) return;
+  container.style.display = '';
+  container.innerHTML = `
+    <div style="padding:4px 0">
+      <div style="font-size:2.2rem;font-weight:700;letter-spacing:.12em;font-family:monospace;color:var(--color-primary);margin:10px 0 8px">${code}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn btn-sm btn-secondary" onclick="_copiarCodigoPairing('${code}')">Copiar</button>
+        <button class="btn btn-sm btn-secondary" onclick="_renovarCodigo('${id_sesion}','${numero}')">Generar nuevo código</button>
+        <button class="btn btn-sm btn-secondary" onclick="mostrarQR('${id_sesion}')">Ver QR</button>
+      </div>
+      <ol style="font-size:.83rem;color:var(--color-text);margin:0;padding-left:18px;line-height:1.9">
+        <li>Abre <strong>WhatsApp</strong> en tu teléfono</li>
+        <li>Ve a <strong>Dispositivos vinculados</strong></li>
+        <li>Toca <strong>Vincular un dispositivo</strong></li>
+        <li>Toca <strong>Vincular con número de teléfono</strong></li>
+        <li>Escribe el código: <strong>${code}</strong></li>
+      </ol>
+      <div id="pairing-status-${id_sesion}" style="margin-top:10px"></div>
+    </div>`;
+}
+
+function _copiarCodigoPairing(code) {
+  const plain = code.replace('-', '');
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(plain).then(() => {
+      showAlert('alert-sesion', '✅ Código copiado', 'success');
+    }).catch(() => showAlert('alert-sesion', 'Copia: ' + code, 'info'));
+  } else {
+    showAlert('alert-sesion', 'Copia: ' + code, 'info');
+  }
+}
+
+async function _renovarCodigo(id_sesion, numero) {
+  try {
+    const resp = await apiFetch(`/sesiones/${id_sesion}/pairing-code?numero=${numero}`);
+    _mostrarPanelPairing(id_sesion, resp.pairing_code, numero);
+    _iniciarPollingPairing(id_sesion);
+  } catch (e) {
+    showAlert('alert-sesion', 'No se pudo renovar: ' + (e.data?.detail || e.message), 'error');
+  }
+}
+
+function _iniciarPollingPairing(id_sesion) {
+  if (_pairingPolls[id_sesion]) clearInterval(_pairingPolls[id_sesion].timer);
+  const startTime = Date.now();
+  const TIMEOUT_MS = 10 * 60 * 1000;
+
+  const timer = setInterval(async () => {
+    if (Date.now() - startTime > TIMEOUT_MS) {
+      clearInterval(timer);
+      delete _pairingPolls[id_sesion];
+      const el = document.getElementById(`pairing-status-${id_sesion}`);
+      if (el) el.innerHTML = '<div class="alert alert-error" style="margin:0">Tiempo agotado. La sesión se eliminará automáticamente.</div>';
+      return;
+    }
+    try {
+      const data = await apiFetch(`/sesiones/${id_sesion}/verificar`);
+      if (data.estado_evolution === 'open') {
+        clearInterval(timer);
+        delete _pairingPolls[id_sesion];
+        const container = document.getElementById(`qr-container-${id_sesion}`);
+        if (container) container.innerHTML = '<div class="alert alert-success" style="margin:0">✅ Cuenta vinculada correctamente</div>';
+        setTimeout(async () => { await cargarSesionActiva(); renderPanelSesion(); }, 2000);
+      }
+    } catch { /* ignorar errores de red, seguir polling */ }
+  }, 3000);
+
+  _pairingPolls[id_sesion] = { timer, startTime };
 }
 
 async function eliminarSesion(id_sesion) {

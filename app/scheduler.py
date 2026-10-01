@@ -235,6 +235,44 @@ async def _procesar_mensajes_pendientes() -> None:
             await db.commit()
 
 
+async def _limpiar_sesiones_huerfanas() -> None:
+    """
+    Elimina sesiones en qr_pendiente con más de 10 minutos sin vincular.
+    Aplica tanto a sesiones QR abandonadas como a pairing code no completado.
+    """
+    limite = datetime.now(timezone.utc) - timedelta(minutes=10)
+    async with AsyncSessionFactory() as db:
+        result = await db.execute(
+            select(SesionWhatsApp).where(
+                SesionWhatsApp.estado_conexion == "qr_pendiente",
+                SesionWhatsApp.fecha_creacion < limite,
+            )
+        )
+        sesiones = result.scalars().all()
+
+    for sesion in sesiones:
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                await client.delete(
+                    f"{EVOLUTION_URL}/instance/delete/{sesion.instancia_evolution}",
+                    headers={"apikey": sesion.token_autorizacion or EVOLUTION_KEY},
+                )
+        except Exception as exc:
+            logger.warning(
+                "Limpieza: no se pudo eliminar instancia '%s' de Evolution: %s",
+                sesion.instancia_evolution, exc,
+            )
+        async with AsyncSessionFactory() as db:
+            s = await db.get(SesionWhatsApp, sesion.id_sesion)
+            if s:
+                await db.delete(s)
+                await db.commit()
+        logger.info(
+            "Sesión huérfana eliminada: instancia=%s id=%s",
+            sesion.instancia_evolution, sesion.id_sesion,
+        )
+
+
 def crear_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="America/Guayaquil")
     scheduler.add_job(
@@ -242,6 +280,15 @@ def crear_scheduler() -> AsyncIOScheduler:
         trigger="interval",
         seconds=60,
         id="enviar_mensajes",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _limpiar_sesiones_huerfanas,
+        trigger="interval",
+        minutes=5,
+        id="limpiar_huerfanas",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
