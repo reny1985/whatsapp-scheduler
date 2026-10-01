@@ -309,12 +309,25 @@ async def obtener_pairing_code(
     if len(digits) < 8:
         raise HTTPException(status_code=400, detail="Número de teléfono inválido")
 
-    data = await _evo_get(
-        f"/instance/connect/{sesion.instancia_evolution}?number={digits}",
-        token=sesion.token_autorizacion,
-    )
+    # Primera llamada inicia la conexión WS de Baileys con el número.
+    # El pairingCode se genera de forma asíncrona cuando el WS se conecta,
+    # por lo que puede llegar null en el primer intento. Reintentamos con
+    # pausa para dar tiempo a que Baileys establezca la sesión.
+    pairing_code = None
+    path = f"/instance/connect/{sesion.instancia_evolution}?number={digits}"
 
-    pairing_code = data.get("pairingCode") if isinstance(data, dict) else None
+    for attempt in range(5):
+        if attempt > 0:
+            await asyncio.sleep(2)
+        data = await _evo_get(path, token=sesion.token_autorizacion)
+        pairing_code = data.get("pairingCode") if isinstance(data, dict) else None
+        if pairing_code:
+            break
+        logger.debug(
+            "pairing-code intento %d: pairingCode=null para %s",
+            attempt + 1, sesion.instancia_evolution,
+        )
+
     if not pairing_code:
         raise HTTPException(
             status_code=503,
