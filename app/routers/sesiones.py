@@ -268,6 +268,158 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
     return sesion
 
 
+@router.post("/iniciar-pairing")
+async def iniciar_pairing(
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(require_admin),
+):
+    """
+    Flujo completo de vinculación por código (pairing code):
+    1. Elimina instancias pendientes del usuario para evitar conflictos
+    2. Crea la instancia Evolution con el número → Baileys inicia WS con phoneNumber
+    3. Configura webhook + settings
+    4. Espera 3s a que el WS establezca la sesión con WhatsApp
+    5. Sondea GET /connect?number= hasta obtener pairingCode (máx 4 reintentos × 2s)
+    6. Devuelve {id_sesion, pairing_code} o 503 con mensaje claro
+
+    El número debe llegar normalizado (solo dígitos, con código de país).
+    """
+    numero: str = body.get("numero", "")
+    digits = "".join(c for c in numero if c.isdigit())
+    if len(digits) < 8:
+        raise HTTPException(status_code=400, detail="Número de teléfono inválido")
+
+    id_usuario = PILOTO_ID_USUARIO
+
+    # 1. Eliminar instancias pendientes del usuario para evitar conflictos con WhatsApp
+    result = await db.execute(
+        select(SesionWhatsApp).where(
+            SesionWhatsApp.id_usuario == id_usuario,
+            SesionWhatsApp.estado_conexion == "qr_pendiente",
+        )
+    )
+    pendientes = result.scalars().all()
+    for s in pendientes:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.delete(
+                    f"{EVOLUTION_URL}/instance/delete/{s.instancia_evolution}",
+                    headers=_evo_headers(s.token_autorizacion),
+                )
+        except Exception:
+            pass
+        await db.delete(s)
+    if pendientes:
+        await db.commit()
+        logger.info("iniciar-pairing: eliminadas %d instancias pendientes", len(pendientes))
+
+    # 2. Crear instancia en Evolution con el número para que Baileys fije phoneNumber
+    instancia = "wa-" + str(uuid.uuid4())[:8]
+    token_generado = str(uuid.uuid4()).upper()
+    try:
+        resp_evo = await _evo_post("/instance/create", {
+            "instanceName": instancia,
+            "token": token_generado,
+            "integration": "WHATSAPP-BAILEYS",
+            "number": digits,       # ← fija phoneNumber en Baileys desde el inicio
+            "qrcode": False,        # no necesitamos QR
+        })
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Evolution API no pudo crear la instancia: {exc.detail}",
+        )
+
+    token = (
+        (resp_evo.get("hash") or {}).get("apikey")
+        or (resp_evo.get("instance") or {}).get("apikey")
+        or token_generado
+    )
+    logger.info("iniciar-pairing: instancia '%s' creada, token=%s...", instancia, token[:8])
+
+    # 3. Guardar en BD
+    nueva = SesionWhatsApp(
+        id_usuario=id_usuario,
+        instancia_evolution=instancia,
+        token_autorizacion=token,
+        estado_conexion="qr_pendiente",
+    )
+    db.add(nueva)
+    await db.commit()
+    await db.refresh(nueva)
+
+    # 4. Configurar webhook + settings (inline: necesitamos que termine antes de sondear)
+    await _configurar_instancia_bg(instancia, token)
+
+    # 5. Esperar a que Baileys establezca la sesión WS con WhatsApp
+    await asyncio.sleep(3)
+
+    # 6. Sondear pairingCode
+    pairing_code = None
+    path = f"/instance/connect/{instancia}?number={digits}"
+
+    for attempt in range(4):
+        if attempt > 0:
+            await asyncio.sleep(2)
+        try:
+            data = await _evo_get(path, token=token)
+        except Exception as exc:
+            logger.warning("iniciar-pairing intento %d error HTTP: %s", attempt + 1, exc)
+            continue
+
+        pc = data.get("pairingCode") if isinstance(data, dict) else None
+        count = data.get("count") if isinstance(data, dict) else None
+        logger.info(
+            "iniciar-pairing intento %d | instancia=%s | number=%s | pairingCode=%s | count=%s | raw=%s",
+            attempt + 1, instancia, digits, pc, count, str(data)[:300],
+        )
+        if pc:
+            pairing_code = pc
+            break
+
+    if not pairing_code:
+        # Limpiar instancia fallida
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.delete(
+                    f"{EVOLUTION_URL}/instance/delete/{instancia}",
+                    headers=_evo_headers(token),
+                )
+        except Exception:
+            pass
+        await db.delete(nueva)
+        await db.commit()
+
+        # Obtener versión de Evolution para el log
+        try:
+            ver_resp = await _evo_get("/", token=token)
+            evo_version = ver_resp.get("version", "desconocida") if isinstance(ver_resp, dict) else "desconocida"
+        except Exception:
+            evo_version = "desconocida"
+        logger.error(
+            "iniciar-pairing FALLÓ: pairingCode null tras 4 intentos. "
+            "instancia=%s number=%s Evolution version=%s",
+            instancia, digits, evo_version,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No se pudo generar el código de vinculación. "
+                "Posibles causas: número ya vinculado a otra sesión activa, "
+                "o WhatsApp limitó temporalmente las solicitudes. "
+                "Intenta con QR."
+            ),
+        )
+
+    # Formatear XXXX-XXXX
+    code = str(pairing_code)
+    if len(code) == 8 and "-" not in code:
+        code = f"{code[:4]}-{code[4:]}"
+
+    return {"id_sesion": str(nueva.id_sesion), "pairing_code": code}
+
+
 @router.get("/", response_model=list[SesionWhatsAppRead])
 async def listar_sesiones(db: AsyncSession = Depends(get_db), _: Usuario = Depends(get_current_user)):
     """Lista todas las sesiones (un usuario = 1 sesión en la fase piloto)."""
@@ -327,12 +479,12 @@ async def obtener_pairing_code(
             await asyncio.sleep(2)
         data = await _evo_get(path, token=sesion.token_autorizacion)
         pairing_code = data.get("pairingCode") if isinstance(data, dict) else None
+        logger.info(
+            "pairing-code (renovar) intento %d | instancia=%s | pairingCode=%s | raw=%s",
+            attempt + 1, sesion.instancia_evolution, pairing_code, str(data)[:300],
+        )
         if pairing_code:
             break
-        logger.debug(
-            "pairing-code intento %d: null para instancia=%s",
-            attempt + 1, sesion.instancia_evolution,
-        )
 
     if not pairing_code:
         raise HTTPException(

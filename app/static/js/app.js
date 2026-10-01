@@ -620,8 +620,9 @@ let _pairingPolls = {};
 async function obtenerCodigoPairing() {
   const pais   = document.getElementById('sel-pais-code')?.value || '593';
   const telRaw = document.getElementById('inp-tel-code')?.value?.trim() || '';
-  let digits = telRaw.replace(/\D/g, '');
-  // Quitar 0 inicial del número local (ej: Ecuador 0969... → 969...)
+
+  // Normalizar: quitar espacios, guiones, '+', y el 0 inicial del número local
+  let digits = telRaw.replace(/[\s\-+]/g, '').replace(/\D/g, '');
   if (digits.startsWith('0')) digits = digits.slice(1);
 
   if (!digits || digits.length < 7) {
@@ -631,41 +632,28 @@ async function obtenerCodigoPairing() {
   const numero = pais + digits;
 
   const btn = document.getElementById('btn-get-code');
-  if (btn) { btn.disabled = true; btn.textContent = 'Creando sesión...'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Generando código (~15 s)...'; }
 
-  let idSesion = null;
   try {
-    // 1. Crear instancia en Evolution + BD
-    const instancia = 'wa-' + Date.now().toString(36);
-    const nueva = await apiFetch('/sesiones/', {
+    // Un solo endpoint que hace todo: limpia pendientes, crea instancia con número,
+    // espera WS, sondea pairingCode y devuelve {id_sesion, pairing_code}
+    const resp = await apiFetch('/sesiones/iniciar-pairing', {
       method: 'POST',
-      body: JSON.stringify({ instancia_evolution: instancia }),
+      body: JSON.stringify({ numero }),
     });
-    idSesion = nueva.id_sesion;
 
-    if (btn) btn.textContent = 'Obteniendo código...';
-
-    // 2. Solicitar pairing code
-    const resp = await apiFetch(`/sesiones/${idSesion}/pairing-code?numero=${numero}`);
-
-    // 3. Re-render para que aparezca la nueva sesión en la lista
     await cargarSesionActiva();
     renderPanelSesion();
-
-    // 4. Mostrar panel con el código
-    _mostrarPanelPairing(idSesion, resp.pairing_code, numero);
-
-    // 5. Polling de estado
-    _iniciarPollingPairing(idSesion);
+    _mostrarPanelPairing(resp.id_sesion, resp.pairing_code, numero);
+    _iniciarPollingPairing(resp.id_sesion);
 
   } catch (e) {
     const msg = e.data?.detail || e.message;
-    showAlert('alert-sesion', msg + (idSesion ? ' — puedes escanear el QR en su lugar.' : ''), 'error');
-    if (idSesion) {
-      await cargarSesionActiva();
-      renderPanelSesion();
-      setTimeout(() => mostrarQR(idSesion), 400);
-    }
+    // Recargar lista (pendientes pueden haber sido eliminadas) y mostrar error SIN QR
+    await cargarSesionActiva();
+    renderPanelSesion();
+    elegirMetodoPairing();
+    showAlert('alert-sesion', msg, 'error');
   }
 }
 
