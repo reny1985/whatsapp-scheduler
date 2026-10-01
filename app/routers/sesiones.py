@@ -310,13 +310,19 @@ async def obtener_pairing_code(
         raise HTTPException(status_code=400, detail="Número de teléfono inválido")
 
     # Primera llamada inicia la conexión WS de Baileys con el número.
-    # El pairingCode se genera de forma asíncrona cuando el WS se conecta,
-    # por lo que puede llegar null en el primer intento. Reintentamos con
-    # pausa para dar tiempo a que Baileys establezca la sesión.
+    # El pairingCode se genera de forma asíncrona cuando el WS conecta (~2s),
+    # así que esperamos antes del primer intento y reintentamos si sigue null.
     pairing_code = None
     path = f"/instance/connect/{sesion.instancia_evolution}?number={digits}"
 
-    for attempt in range(5):
+    # Llamada 0: inicia la conexión WS (casi siempre devuelve null)
+    await _evo_get(path, token=sesion.token_autorizacion)
+
+    # Esperar a que Baileys establezca la sesión WS con WhatsApp
+    await asyncio.sleep(3)
+
+    # Reintentar hasta 4 veces con 2s de pausa
+    for attempt in range(4):
         if attempt > 0:
             await asyncio.sleep(2)
         data = await _evo_get(path, token=sesion.token_autorizacion)
@@ -324,14 +330,19 @@ async def obtener_pairing_code(
         if pairing_code:
             break
         logger.debug(
-            "pairing-code intento %d: pairingCode=null para %s",
+            "pairing-code intento %d: null para instancia=%s",
             attempt + 1, sesion.instancia_evolution,
         )
 
     if not pairing_code:
         raise HTTPException(
             status_code=503,
-            detail="Evolution API no devolvió un pairing code. Intenta escanear el QR en su lugar.",
+            detail=(
+                "WhatsApp no generó un código de vinculación. "
+                "Posibles causas: el número ya está vinculado a otra sesión activa, "
+                "o WhatsApp limitó temporalmente las solicitudes. "
+                "Intenta escanear el QR o usa otro número."
+            ),
         )
 
     code = str(pairing_code)
