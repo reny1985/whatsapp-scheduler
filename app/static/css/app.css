@@ -532,6 +532,51 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   50% { opacity: 0.3; transform: scale(0.85); }
 }
 
+/* ─── intl-tel-input ───────────────────────────────────────── */
+.iti { width: 100%; max-width: 320px; }
+.iti__flag-container { z-index: 10; }
+.iti input[type=tel] { padding-left: 90px !important; }
+/* Dropdown oscuro */
+.iti__dropdown-content {
+  background: var(--color-card, #1a1d27);
+  border: 1px solid var(--color-border, #2a2d3a);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.45);
+  overflow: hidden;
+}
+.iti__search-input {
+  background: var(--color-input-bg, #12141e) !important;
+  color: var(--color-text, #e2e8f0) !important;
+  border-bottom: 1px solid var(--color-border, #2a2d3a) !important;
+  padding: 8px 12px !important;
+}
+.iti__search-input::placeholder { color: var(--color-muted, #8892a0); }
+.iti__country {
+  padding: 8px 14px;
+  color: var(--color-text, #e2e8f0);
+}
+.iti__country.iti__highlight,
+.iti__country:hover { background: rgba(37,211,102,.12) !important; }
+.iti__country-name { color: var(--color-text, #e2e8f0); }
+.iti__dial-code { color: var(--color-muted, #8892a0); }
+.iti__selected-country { background: transparent; }
+.iti__selected-country-primary:hover,
+.iti__selected-country-primary:focus { background: rgba(37,211,102,.1); }
+/* Mobile: dropdown a pantalla completa */
+@media (max-width: 640px) {
+  .iti__dropdown-content {
+    position: fixed !important;
+    top: 0 !important; left: 0 !important;
+    width: 100vw !important; height: 100dvh !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    z-index: 9999 !important;
+    display: flex; flex-direction: column;
+  }
+  .iti__search-input { font-size: 16px !important; }
+  .iti__country-list { flex: 1; overflow-y: auto; }
+}
+
 /* Combo buscable de grupos */
 .grupo-opt {
   padding: 9px 14px;

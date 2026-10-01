@@ -287,6 +287,7 @@ async def iniciar_pairing(
     """
     numero: str = body.get("numero", "")
     digits = "".join(c for c in numero if c.isdigit())
+    logger.info("iniciar-pairing recibido: numero=%r digits=%r len=%d", numero, digits, len(digits))
     if len(digits) < 8:
         raise HTTPException(status_code=400, detail="Número de teléfono inválido")
 
@@ -701,7 +702,7 @@ async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str 
             await db.execute(text("""
                 INSERT INTO grupos_whatsapp (id_grupo, id_sesion, subject, size, actualizado_en)
                 SELECT g->>'id', :sid, g->>'subject', (g->>'size')::int, now()
-                FROM json_array_elements(:data::json) AS g
+                FROM json_array_elements(CAST(:data AS json)) AS g
                 WHERE g->>'id' IS NOT NULL AND g->>'id' != ''
                 ON CONFLICT (id_grupo, id_sesion) DO UPDATE
                   SET subject = EXCLUDED.subject,

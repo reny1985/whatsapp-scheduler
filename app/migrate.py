@@ -46,6 +46,7 @@ _STEPS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_sesiones_usuario ON sesiones_whatsapp (id_usuario)",
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS numero_telefono VARCHAR(30)",
 
     # ── mensajes_programados ──────────────────────────────────────────────
     """

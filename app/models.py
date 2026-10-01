@@ -74,6 +74,7 @@ class SesionWhatsApp(Base):
         nullable=False,
     )
     nombre_sesion: Mapped[str | None] = mapped_column(String(100))
+    numero_telefono: Mapped[str | None] = mapped_column(String(30))
     instancia_evolution: Mapped[str] = mapped_column(
         String(100), unique=True, nullable=False
     )

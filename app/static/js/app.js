@@ -589,54 +589,187 @@ function _esMobile() {
   return window.innerWidth <= 640 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
+let _pairingIti = null;
+
 function elegirMetodoPairing() {
   const div = document.getElementById('form-pairing-code');
   if (!div) return;
   div.style.display = '';
   div.innerHTML = `
     <div class="form-group">
-      <label class="form-label">País</label>
-      <select id="sel-pais-code" class="form-control" style="max-width:260px">
-        <option value="593" selected>🇪🇨 Ecuador (+593)</option>
-        <option value="57">🇨🇴 Colombia (+57)</option>
-        <option value="51">🇵🇪 Perú (+51)</option>
-        <option value="56">🇨🇱 Chile (+56)</option>
-        <option value="54">🇦🇷 Argentina (+54)</option>
-        <option value="55">🇧🇷 Brasil (+55)</option>
-        <option value="52">🇲🇽 México (+52)</option>
-        <option value="1">🇺🇸 USA/Canada (+1)</option>
-      </select>
-    </div>
-    <div class="form-group">
       <label class="form-label">Número de WhatsApp</label>
-      <input id="inp-tel-code" type="tel" class="form-control" placeholder="Ej: 0969829845" style="max-width:260px" />
-      <p style="font-size:.78rem;color:var(--color-muted);margin-top:4px">Sin código de país — solo el número local.</p>
+      <input id="inp-tel-code" type="tel" class="form-control" placeholder="Ej: 0969829845"
+             autocomplete="tel" inputmode="tel" style="width:100%;max-width:320px" />
+      <p id="tel-code-error" style="font-size:.78rem;color:var(--color-danger,#f87171);margin-top:4px;display:none"></p>
     </div>
     <button class="btn btn-primary" id="btn-get-code" onclick="obtenerCodigoPairing()">Obtener código</button>`;
+
+  if (typeof window.intlTelInput !== 'function') {
+    div.insertAdjacentHTML('afterbegin', '<p style="font-size:.78rem;color:var(--color-muted)">Incluye el código de país (ej: 593969829845)</p>');
+    return;
+  }
+
+  const input = document.getElementById('inp-tel-code');
+  _pairingIti = window.intlTelInput(input, {
+    initialCountry: _detectarPaisTel(),
+    preferredCountries: ['ec','co','pe','mx','cl','ar','ve','bo','es','us'],
+    countrySearch: true,
+    i18n: _itiI18nEs(),
+  });
+
+  // Al salir del campo: reformatear quitando prefijo de país y 0 inicial para display limpio
+  input.addEventListener('blur', () => {
+    if (!input.value.trim() || !_pairingIti) return;
+    const dialCode = _pairingIti.getSelectedCountryData()?.dialCode || '';
+    const national = _extraerNacionalPairing(input.value, dialCode);
+    if (national) input.value = national;
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') obtenerCodigoPairing(); });
+}
+
+function _detectarPaisTel() {
+  try {
+    const lang = navigator.languages?.[0] || navigator.language || '';
+    if (lang.includes('-')) {
+      const region = lang.split('-')[1].toLowerCase();
+      // Solo aceptar códigos conocidos de América Latina + España
+      const latinam = ['ec','co','pe','mx','cl','ar','ve','bo','es','us','br','uy','py','cr','pa','gt','hn','sv','ni','do','cu','pr'];
+      if (latinam.includes(region)) return region;
+    }
+  } catch {}
+  return 'ec';
+}
+
+function _itiI18nEs() {
+  return {
+    searchPlaceholder: 'Buscar país o código',
+    zeroSearchResults: 'Sin resultados',
+    ac:'Isla Ascensión',ad:'Andorra',ae:'Emiratos Árabes Unidos',af:'Afganistán',ag:'Antigua y Barbuda',
+    ai:'Anguila',al:'Albania',am:'Armenia',ao:'Angola',ar:'Argentina',as:'Samoa Americana',at:'Austria',
+    au:'Australia',aw:'Aruba',az:'Azerbaiyán',ba:'Bosnia y Herzegovina',bb:'Barbados',bd:'Bangladés',
+    be:'Bélgica',bf:'Burkina Faso',bg:'Bulgaria',bh:'Baréin',bi:'Burundi',bj:'Benín',bm:'Bermudas',
+    bn:'Brunéi',bo:'Bolivia',br:'Brasil',bs:'Bahamas',bt:'Bután',bw:'Botsuana',by:'Bielorrusia',
+    bz:'Belice',ca:'Canadá',cd:'Congo (RD)',cf:'República Centroafricana',cg:'Congo',ch:'Suiza',
+    ci:'Costa de Marfil',ck:'Islas Cook',cl:'Chile',cm:'Camerún',cn:'China',co:'Colombia',
+    cr:'Costa Rica',cu:'Cuba',cv:'Cabo Verde',cw:'Curazao',cy:'Chipre',cz:'Chequia',de:'Alemania',
+    dj:'Yibuti',dk:'Dinamarca',dm:'Dominica',do:'República Dominicana',dz:'Argelia',ec:'Ecuador',
+    ee:'Estonia',eg:'Egipto',er:'Eritrea',es:'España',et:'Etiopía',fi:'Finlandia',fj:'Fiyi',
+    fk:'Islas Malvinas',fm:'Micronesia',fo:'Islas Feroe',fr:'Francia',ga:'Gabón',gb:'Reino Unido',
+    gd:'Granada',ge:'Georgia',gf:'Guayana Francesa',gg:'Guernesey',gh:'Ghana',gi:'Gibraltar',
+    gl:'Groenlandia',gm:'Gambia',gn:'Guinea',gp:'Guadalupe',gq:'Guinea Ecuatorial',gr:'Grecia',
+    gt:'Guatemala',gu:'Guam',gw:'Guinea-Bisáu',gy:'Guyana',hk:'Hong Kong',hn:'Honduras',
+    hr:'Croacia',ht:'Haití',hu:'Hungría',id:'Indonesia',ie:'Irlanda',il:'Israel',im:'Isla de Man',
+    in:'India',iq:'Irak',ir:'Irán',is:'Islandia',it:'Italia',je:'Jersey',jm:'Jamaica',
+    jo:'Jordania',jp:'Japón',ke:'Kenia',kg:'Kirguistán',kh:'Camboya',ki:'Kiribati',km:'Comoras',
+    kn:'San Cristóbal y Nieves',kp:'Corea del Norte',kr:'Corea del Sur',kw:'Kuwait',
+    ky:'Islas Caimán',kz:'Kazajistán',la:'Laos',lb:'Líbano',lc:'Santa Lucía',li:'Liechtenstein',
+    lk:'Sri Lanka',lr:'Liberia',ls:'Lesoto',lt:'Lituania',lu:'Luxemburgo',lv:'Letonia',ly:'Libia',
+    ma:'Marruecos',mc:'Mónaco',md:'Moldavia',me:'Montenegro',mg:'Madagascar',mh:'Islas Marshall',
+    mk:'Macedonia del Norte',ml:'Malí',mm:'Myanmar',mn:'Mongolia',mo:'Macao',
+    mp:'Islas Marianas del Norte',mq:'Martinica',mr:'Mauritania',ms:'Montserrat',mt:'Malta',
+    mu:'Mauricio',mv:'Maldivas',mw:'Malaui',mx:'México',my:'Malasia',mz:'Mozambique',
+    na:'Namibia',nc:'Nueva Caledonia',ne:'Níger',ng:'Nigeria',ni:'Nicaragua',nl:'Países Bajos',
+    no:'Noruega',np:'Nepal',nr:'Nauru',nu:'Niue',nz:'Nueva Zelanda',om:'Omán',pa:'Panamá',
+    pe:'Perú',pf:'Polinesia Francesa',pg:'Papúa Nueva Guinea',ph:'Filipinas',pk:'Pakistán',
+    pl:'Polonia',pr:'Puerto Rico',ps:'Palestina',pt:'Portugal',pw:'Palaos',py:'Paraguay',
+    qa:'Catar',re:'Reunión',ro:'Rumanía',rs:'Serbia',ru:'Rusia',rw:'Ruanda',
+    sa:'Arabia Saudita',sb:'Islas Salomón',sc:'Seychelles',sd:'Sudán',se:'Suecia',
+    sg:'Singapur',sh:'Santa Elena',si:'Eslovenia',sk:'Eslovaquia',sl:'Sierra Leona',
+    sm:'San Marino',sn:'Senegal',so:'Somalia',sr:'Surinam',ss:'Sudán del Sur',
+    st:'Santo Tomé y Príncipe',sv:'El Salvador',sx:'San Martín (Países Bajos)',sy:'Siria',
+    sz:'Esuatini',tc:'Islas Turcas y Caicos',td:'Chad',tg:'Togo',th:'Tailandia',
+    tj:'Tayikistán',tl:'Timor Oriental',tm:'Turkmenistán',tn:'Túnez',to:'Tonga',
+    tr:'Turquía',tt:'Trinidad y Tobago',tv:'Tuvalu',tw:'Taiwán',tz:'Tanzania',
+    ua:'Ucrania',ug:'Uganda',us:'Estados Unidos',uy:'Uruguay',uz:'Uzbekistán',
+    va:'Ciudad del Vaticano',vc:'San Vicente y las Granadinas',ve:'Venezuela',
+    vg:'Islas Vírgenes Británicas',vi:'Islas Vírgenes (EE.UU.)',vn:'Vietnam',
+    vu:'Vanuatu',wf:'Wallis y Futuna',ws:'Samoa',xk:'Kosovo',ye:'Yemen',
+    yt:'Mayotte',za:'Sudáfrica',zm:'Zambia',zw:'Zimbabue',
+  };
+}
+
+/**
+ * Normaliza un número de teléfono a solo dígitos con código de país.
+ * Maneja todos los formatos de entrada:
+ *   "0969829845"       → "593969829845"
+ *   "969829845"        → "593969829845"
+ *   "096 982 9845"     → "593969829845"
+ *   "+593969829845"    → "593969829845"
+ *   "+593 0969829845"  → "593969829845"  (autocomplete móvil)
+ *   "5930969829845"    → "593969829845"  (código + 0 duplicado)
+ */
+function _normalizarNumeroWA(raw, dialCode) {
+  // 1. Quitar espacios, guiones, paréntesis, punto
+  let s = raw.replace(/[\s\-()+.]/g, '');
+  // 2. Si empieza con el código de país (con o sin +)
+  if (s.startsWith('+')) s = s.slice(1);
+  if (dialCode && s.startsWith(dialCode)) {
+    s = s.slice(dialCode.length);
+    // Puede quedar "0969829845" si el autocomplete puso código+0
+    if (s.startsWith('0')) s = s.slice(1);
+  } else if (s.startsWith('0')) {
+    // Prefijo nacional (ej. 0969829845 → 969829845)
+    s = s.slice(1);
+  }
+  // 3. Solo dígitos
+  s = s.replace(/\D/g, '');
+  return (dialCode && s.length >= 6) ? dialCode + s : '';
+}
+
+/** Devuelve solo la parte nacional (sin código de país ni 0 inicial) para display. */
+function _extraerNacionalPairing(raw, dialCode) {
+  const full = _normalizarNumeroWA(raw, dialCode);
+  return (full && dialCode) ? full.slice(dialCode.length) : '';
+}
+
+/** Prueba automática de normalización — resultados visibles en consola del navegador. */
+function _testNormPairing() {
+  const casos = [
+    { raw:'0969829845',      dial:'593', exp:'593969829845' },
+    { raw:'969829845',       dial:'593', exp:'593969829845' },
+    { raw:'096 982 9845',    dial:'593', exp:'593969829845' },
+    { raw:'+593969829845',   dial:'593', exp:'593969829845' },
+    { raw:'+593 0969829845', dial:'593', exp:'593969829845' },
+    { raw:'3001234567',      dial:'57',  exp:'573001234567' },
+    { raw:'5512345678',      dial:'52',  exp:'525512345678' },
+  ];
+  let ok = 0, fail = 0;
+  casos.forEach(c => {
+    const res = _normalizarNumeroWA(c.raw, c.dial);
+    const pass = res === c.exp;
+    pass ? ok++ : fail++;
+    console[pass ? 'log' : 'error'](`${pass ? '✅' : '❌'} "${c.raw}" (+${c.dial}) → "${res}"${pass ? '' : ` ≠ "${c.exp}"`}`);
+  });
+  console.log(`Normalización: ${ok}/${ok+fail} pasaron`);
+  return fail === 0;
 }
 
 let _pairingPolls = {};
 
 async function obtenerCodigoPairing() {
-  const pais   = document.getElementById('sel-pais-code')?.value || '593';
-  const telRaw = document.getElementById('inp-tel-code')?.value?.trim() || '';
+  const input = document.getElementById('inp-tel-code');
+  const errEl = document.getElementById('tel-code-error');
 
-  // Normalizar: quitar espacios, guiones, '+', y el 0 inicial del número local
-  let digits = telRaw.replace(/[\s\-+]/g, '').replace(/\D/g, '');
-  if (digits.startsWith('0')) digits = digits.slice(1);
+  let numero;
+  const rawVal = input?.value?.trim() || '';
 
-  if (!digits || digits.length < 7) {
-    showAlert('alert-sesion', 'Ingresa un número de teléfono válido', 'error');
+  if (!rawVal) {
+    if (errEl) { errEl.textContent = 'Ingresa un número de teléfono'; errEl.style.display = ''; }
     return;
   }
-  const numero = pais + digits;
+
+  const dialCode = _pairingIti?.getSelectedCountryData()?.dialCode || '593';
+  numero = _normalizarNumeroWA(rawVal, dialCode);
+
+  if (!numero || numero.length < 9) {
+    if (errEl) { errEl.textContent = 'Número demasiado corto'; errEl.style.display = ''; }
+    return;
+  }
 
   const btn = document.getElementById('btn-get-code');
   if (btn) { btn.disabled = true; btn.textContent = 'Generando código (~15 s)...'; }
 
   try {
-    // Un solo endpoint que hace todo: limpia pendientes, crea instancia con número,
-    // espera WS, sondea pairingCode y devuelve {id_sesion, pairing_code}
     const resp = await apiFetch('/sesiones/iniciar-pairing', {
       method: 'POST',
       body: JSON.stringify({ numero }),
@@ -649,7 +782,6 @@ async function obtenerCodigoPairing() {
 
   } catch (e) {
     const msg = e.data?.detail || e.message;
-    // Recargar lista (pendientes pueden haber sido eliminadas) y mostrar error SIN QR
     await cargarSesionActiva();
     renderPanelSesion();
     elegirMetodoPairing();
