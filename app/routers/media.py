@@ -2,6 +2,7 @@
 routers/media.py
 Subida de archivos multimedia (imágenes, audio, video, documentos).
 """
+import asyncio
 import logging
 import mimetypes
 import os
@@ -80,6 +81,27 @@ async def subir_archivo(file: UploadFile = File(...)):
 
     destino.write_bytes(contenido)
     logger.info("Archivo subido: %s (%s, %d bytes)", nombre_unico, content_type, len(contenido))
+
+    # Convertir audio/webm → .ogg para compatibilidad con WhatsApp
+    if base_ct == "audio/webm":
+        destino_ogg = destino.with_suffix(".ogg")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", str(destino),
+                "-c:a", "copy", str(destino_ogg),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            if proc.returncode == 0 and destino_ogg.exists():
+                destino.unlink(missing_ok=True)
+                nombre_unico = destino_ogg.name
+                destino = destino_ogg
+                logger.info("Audio convertido a ogg: %s", nombre_unico)
+            else:
+                logger.warning("ffmpeg falló (rc=%s), se usará el webm original", proc.returncode)
+        except Exception as exc:
+            logger.warning("No se pudo convertir audio a ogg: %s", exc)
 
     return {
         "url": f"/static/uploads/{nombre_unico}",
