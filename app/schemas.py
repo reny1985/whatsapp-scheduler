@@ -165,4 +165,5 @@ class MensajeProgramadoRead(ORMBase):
     estado_envio: EstadoEnvio
     recurrencia: Recurrencia
     id_mensaje_origen: uuid.UUID | None
+    error_envio: str | None = None
     fecha_creacion: datetime

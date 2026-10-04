@@ -7,7 +7,8 @@ Ejecuta un job cada 60 s que:
   2. Los marca como 'enviando' (evita doble envío)
   3. Llama a Evolution API:
        - Texto solo → POST /message/sendText/{instancia}
-       - Media (+caption opcional) → POST /message/sendMedia/{instancia}
+       - Audio → POST /message/sendWhatsAppAudio/{instancia} (+ texto aparte)
+       - Otro media (+caption opcional) → POST /message/sendMedia/{instancia}
   4. Marca como 'enviado' o 'fallido' según el resultado
 """
 import logging
@@ -15,7 +16,7 @@ import os
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -67,6 +68,20 @@ def _make_absolute_url(url_media: str) -> str:
     return BASE_PUBLIC_URL.rstrip("/") + quote(url_media)
 
 
+def _nombre_mp4(url_media: str) -> str:
+    """fileName con extensión .mp4 a partir de la URL del video."""
+    base = unquote(urlparse(url_media).path.rsplit("/", 1)[-1]) or "video"
+    return os.path.splitext(base)[0] + ".mp4"
+
+
+async def _post_evolution(client: httpx.AsyncClient, endpoint: str, payload: dict, headers: dict) -> dict:
+    r = await client.post(endpoint, json=payload, headers=headers)
+    logger.info("📥 Evolution %s → %s: %s", endpoint.rsplit("/message/", 1)[-1], r.status_code, r.text[:500])
+    if r.status_code >= 400:
+        raise RuntimeError(f"Evolution API {r.status_code}: {r.text[:300]}")
+    return r.json()
+
+
 async def _enviar_mensaje(
     instancia: str,
     destinatario: str,
@@ -79,16 +94,42 @@ async def _enviar_mensaje(
 
     async with httpx.AsyncClient(timeout=30) as client:
 
+        if tipo_media == "audio" and url_media:
+            # Nota de voz; si hay texto va como mensaje aparte después del audio.
+            url_abs = _make_absolute_url(url_media)
+            logger.debug("📤 sendWhatsAppAudio → %s | destinatario=%s | url=%s", instancia, destinatario, url_abs)
+            resultado = await _post_evolution(
+                client,
+                f"{EVOLUTION_URL}/message/sendWhatsAppAudio/{instancia}",
+                {
+                    "number": destinatario,
+                    "options": {"encoding": True},
+                    "audioMessage": {"audio": url_abs},
+                },
+                headers,
+            )
+            if texto and texto.strip():
+                try:
+                    await _post_evolution(
+                        client,
+                        f"{EVOLUTION_URL}/message/sendText/{instancia}",
+                        {"number": destinatario, "textMessage": {"text": texto}},
+                        headers,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(f"Audio enviado pero el texto falló: {exc}") from exc
+            return resultado
+
         if tipo_media and url_media:
             url_abs = _make_absolute_url(url_media)
-            payload = {
-                "number": destinatario,
-                "mediaMessage": {
-                    "mediatype": tipo_media,
-                    "media": url_abs,
-                    "caption": texto or "",
-                },
+            media_message = {
+                "mediatype": tipo_media,
+                "media": url_abs,
+                "caption": texto or "",
             }
+            if tipo_media == "video":
+                media_message["fileName"] = _nombre_mp4(url_media)
+            payload = {"number": destinatario, "mediaMessage": media_message}
             endpoint = f"{EVOLUTION_URL}/message/sendMedia/{instancia}"
             logger.debug(
                 "📤 sendMedia → %s | destinatario=%s | tipo=%s | url=%s",
@@ -105,16 +146,7 @@ async def _enviar_mensaje(
                 instancia, destinatario, (texto or "")[:60]
             )
 
-        r = await client.post(endpoint, json=payload, headers=headers)
-        logger.debug(
-            "📥 Evolution respuesta %s: %s",
-            r.status_code, r.text[:300]
-        )
-
-    if r.status_code >= 400:
-        raise RuntimeError(f"Evolution API {r.status_code}: {r.text[:300]}")
-
-    return r.json()
+        return await _post_evolution(client, endpoint, payload, headers)
 
 
 async def _procesar_mensajes_pendientes() -> None:
@@ -197,17 +229,19 @@ async def _procesar_mensajes_pendientes() -> None:
                     str(resultado)[:120],
                 )
                 nuevo_estado = "enviado"
+                error_envio = None
             except Exception as exc:
                 logger.error(
                     "❌ Error enviando %s → %s: %s",
                     msg.id_mensaje, msg.id_grupo, exc,
                 )
                 nuevo_estado = "fallido"
+                error_envio = str(exc)[:1000]
 
             await db.execute(
                 update(MensajeProgramado)
                 .where(MensajeProgramado.id_mensaje == msg.id_mensaje)
-                .values(estado_envio=nuevo_estado)
+                .values(estado_envio=nuevo_estado, error_envio=error_envio)
             )
 
             # Si se envió correctamente y tiene recurrencia, clonar el próximo

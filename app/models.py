@@ -136,6 +136,7 @@ class MensajeProgramado(Base):
         ForeignKey("mensajes_programados.id_mensaje", ondelete="SET NULL", name="fk_origen"),
         nullable=True,
     )
+    error_envio: Mapped[str | None] = mapped_column(Text)
     fecha_creacion: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )

@@ -25,6 +25,7 @@ MIME_TO_TIPO: dict[str, str] = {
     "image/gif": "image",
     "image/webp": "image",
     "video/mp4": "video",
+    "video/quicktime": "video",
     "video/mpeg": "video",
     "video/webm": "video",
     "video/3gpp": "video",
@@ -34,12 +35,86 @@ MIME_TO_TIPO: dict[str, str] = {
     "audio/mp4": "audio",
     "audio/aac": "audio",
     "audio/webm": "audio",
+    "audio/x-m4a": "audio",
+    "audio/3gpp": "audio",
     "application/pdf": "document",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
     "application/msword": "document",
     "text/plain": "document",
 }
+
+FFMPEG_TIMEOUT = {"audio": 120, "video": 600}
+
+# MP4 H.264 + AAC, máx. 1280 px de ancho, dimensiones pares
+FFMPEG_VIDEO_ARGS = [
+    "-map", "0:v:0", "-map", "0:a:0?",
+    "-vf", "scale=w='trunc(min(1280,iw)/2)*2':h=-2",
+    "-c:v", "libx264", "-profile:v", "main", "-pix_fmt", "yuv420p",
+    "-preset", "veryfast", "-crf", "26",
+    "-c:a", "aac", "-b:a", "128k",
+    "-movflags", "+faststart",
+]
+
+# OGG Opus mono 48 kHz (nota de voz)
+FFMPEG_AUDIO_ARGS = [
+    "-vn", "-map", "0:a:0",
+    "-c:a", "libopus", "-b:a", "32k", "-ac", "1", "-ar", "48000",
+    "-application", "voip",
+]
+
+
+def _error_conversion(tipo_media: str, detalle: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail=f"No se pudo procesar el {tipo_media}: el archivo está dañado o tiene un "
+               f"formato no soportado. {detalle}".strip(),
+    )
+
+
+async def _convertir_media(contenido: bytes, tipo_media: str, ext: str, unico: str) -> str:
+    """Convierte audio → .ogg (Opus) o video → .mp4 (H.264+AAC). Devuelve el nombre final.
+
+    Escribe el original en un temporal que siempre se borra. Si ffmpeg falla,
+    no queda nada guardado y se lanza HTTPException.
+    """
+    salida_ext = ".ogg" if tipo_media == "audio" else ".mp4"
+    entrada = UPLOAD_DIR / f".{unico}.orig{ext or '.bin'}"
+    destino = UPLOAD_DIR / f"{unico}{salida_ext}"
+    args = FFMPEG_AUDIO_ARGS if tipo_media == "audio" else FFMPEG_VIDEO_ARGS
+    try:
+        entrada.write_bytes(contenido)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-v", "error", "-i", str(entrada), *args, str(destino),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            logger.error("ffmpeg no está instalado en el servidor")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"El servidor no puede convertir {tipo_media} en este momento (ffmpeg no disponible).",
+            )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), FFMPEG_TIMEOUT[tipo_media])
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.error("ffmpeg excedió el tiempo al convertir %s", unico)
+            raise _error_conversion(tipo_media, "La conversión tardó demasiado; use un archivo más corto.")
+        if proc.returncode != 0 or not destino.exists() or destino.stat().st_size == 0:
+            logger.error("ffmpeg falló (rc=%s) en %s: %s", proc.returncode, unico,
+                         stderr.decode(errors="replace")[-500:])
+            raise _error_conversion(tipo_media, "")
+        logger.info("%s convertido: %s", tipo_media.capitalize(), destino.name)
+        return destino.name
+    except BaseException:
+        destino.unlink(missing_ok=True)
+        raise
+    finally:
+        entrada.unlink(missing_ok=True)
+
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -58,8 +133,8 @@ async def subir_archivo(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"Tipo de archivo no soportado: {content_type}. "
-                   "Use imagen (jpg/png/gif/webp), video (mp4/webm), "
-                   "audio (mp3/ogg/wav/aac) o documento (pdf/docx/xlsx).",
+                   "Use imagen (jpg/png/gif/webp), video (mp4/webm/mov/3gp), "
+                   "audio (mp3/ogg/wav/aac/m4a) o documento (pdf/docx/xlsx).",
         )
 
     contenido = await file.read()
@@ -75,33 +150,17 @@ async def subir_archivo(file: UploadFile = File(...)):
         )
 
     original_stem = Path(file.filename or "archivo").stem
-    ext = Path(file.filename or "").suffix.lower() or mimetypes.guess_extension(content_type) or ""
-    nombre_unico = f"{uuid.uuid4().hex}_{original_stem[:40]}{ext}"
-    destino = UPLOAD_DIR / nombre_unico
+    ext = Path(file.filename or "").suffix.lower() or mimetypes.guess_extension(base_ct) or ""
+    unico = f"{uuid.uuid4().hex}_{original_stem[:40]}"
 
-    destino.write_bytes(contenido)
+    if tipo_media in ("audio", "video"):
+        # Todo audio/video se recodifica; el original nunca se guarda.
+        nombre_unico = await _convertir_media(contenido, tipo_media, ext, unico)
+    else:
+        nombre_unico = f"{unico}{ext}"
+        (UPLOAD_DIR / nombre_unico).write_bytes(contenido)
+
     logger.info("Archivo subido: %s (%s, %d bytes)", nombre_unico, content_type, len(contenido))
-
-    # Convertir audio/webm → .ogg para compatibilidad con WhatsApp
-    if base_ct == "audio/webm":
-        destino_ogg = destino.with_suffix(".ogg")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", str(destino),
-                "-c:a", "copy", str(destino_ogg),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-            if proc.returncode == 0 and destino_ogg.exists():
-                destino.unlink(missing_ok=True)
-                nombre_unico = destino_ogg.name
-                destino = destino_ogg
-                logger.info("Audio convertido a ogg: %s", nombre_unico)
-            else:
-                logger.warning("ffmpeg falló (rc=%s), se usará el webm original", proc.returncode)
-        except Exception as exc:
-            logger.warning("No se pudo convertir audio a ogg: %s", exc)
 
     return {
         "url": f"/static/uploads/{nombre_unico}",

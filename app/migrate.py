@@ -68,6 +68,7 @@ _STEPS = [
         ADD COLUMN IF NOT EXISTS id_mensaje_origen UUID
         REFERENCES mensajes_programados(id_mensaje) ON DELETE SET NULL
     """,
+    "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS error_envio TEXT",
     "CREATE INDEX IF NOT EXISTS idx_mensajes_fecha_estado ON mensajes_programados (fecha_hora_disparo, estado_envio)",
 
     # ── grupos_whatsapp (caché) ────────────────────────────────────────────
