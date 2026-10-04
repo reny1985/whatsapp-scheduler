@@ -24,10 +24,21 @@
    git push origin main
    ```
 
-5. **Deploy solo desde el directorio `backend/`.**
+5. **Deploy solo desde el directorio `backend/`, y solo a staging.**
    ```bash
-   cd /Users/macbook/Desktop/SaaS_WhatsApp/backend && railway up --detach
+   cd /Users/macbook/Desktop/SaaS_WhatsApp/backend && railway up --environment staging --detach
    ```
+
+---
+
+## Entornos y despliegue (reglas permanentes)
+
+- Hay dos entornos en Railway: **staging** (`https://thorough-adventure-staging.up.railway.app`) y **production** (`https://enviafast.net`).
+- Todo despliegue va solo a staging: `railway up --environment staging`. **Nunca despliegues a production sin que el usuario escriba "aprobado para producción".**
+- Antes de desplegar a production: respaldo con `pg_dump` guardado fuera del proyecto, unir la rama a `main`, crear etiqueta de versión y hacer push.
+- Todo trabajo nuevo va en una rama propia creada desde la última etiqueta estable.
+- Los adjuntos se guardan en el volumen `/data` (`UPLOAD_DIR=/data/uploads`). No cambies esa ruta.
+- Nunca borres sesiones ni datos de production para probar.
 
 ---
 
