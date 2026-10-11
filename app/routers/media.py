@@ -42,6 +42,21 @@ MIME_TO_TIPO: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
     "application/msword": "document",
     "text/plain": "document",
+    "application/vnd.ms-excel": "document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "document",
+    "text/csv": "document",
+}
+
+# Extensión → mimetype de los documentos (también lo usa el scheduler al enviar)
+DOC_EXT_MIME: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".doc": "application/msword",
+    ".xls": "application/vnd.ms-excel",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
 FFMPEG_TIMEOUT = {"audio": 120, "video": 600}
@@ -123,7 +138,8 @@ router = APIRouter(prefix="/media", tags=["media"])
 async def subir_archivo(file: UploadFile = File(...)):
     content_type = file.content_type or ""
     if not content_type or content_type == "application/octet-stream":
-        guessed, _ = mimetypes.guess_type(file.filename or "")
+        nombre_ext = Path(file.filename or "").suffix.lower()
+        guessed = DOC_EXT_MIME.get(nombre_ext) or mimetypes.guess_type(file.filename or "")[0]
         content_type = guessed or "application/octet-stream"
 
     # Strip codecs parameter (e.g. "audio/webm;codecs=opus" → "audio/webm")
@@ -134,7 +150,7 @@ async def subir_archivo(file: UploadFile = File(...)):
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"Tipo de archivo no soportado: {content_type}. "
                    "Use imagen (jpg/png/gif/webp), video (mp4/webm/mov/3gp), "
-                   "audio (mp3/ogg/wav/aac/m4a) o documento (pdf/docx/xlsx).",
+                   "audio (mp3/ogg/wav/aac/m4a) o documento (pdf/doc/docx/xls/xlsx/pptx/txt/csv).",
         )
 
     contenido = await file.read()
@@ -150,7 +166,10 @@ async def subir_archivo(file: UploadFile = File(...)):
         )
 
     original_stem = Path(file.filename or "archivo").stem
-    ext = Path(file.filename or "").suffix.lower() or mimetypes.guess_extension(base_ct) or ""
+    ext = Path(file.filename or "").suffix.lower()
+    if not ext and tipo_media == "document":
+        ext = next((e for e, m in DOC_EXT_MIME.items() if m == base_ct), "")
+    ext = ext or mimetypes.guess_extension(base_ct) or ""
     unico = f"{uuid.uuid4().hex}_{original_stem[:40]}"
 
     if tipo_media in ("audio", "video"):

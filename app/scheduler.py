@@ -14,6 +14,7 @@ Ejecuta un job cada 60 s que:
 import logging
 import os
 import random
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote, urlparse
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal as AsyncSessionFactory
 from app.models import MensajeProgramado, SesionWhatsApp
+from app.routers.media import DOC_EXT_MIME
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -72,6 +74,22 @@ def _nombre_mp4(url_media: str) -> str:
     """fileName con extensión .mp4 a partir de la URL del video."""
     base = unquote(urlparse(url_media).path.rsplit("/", 1)[-1]) or "video"
     return os.path.splitext(base)[0] + ".mp4"
+
+
+def _datos_documento(url_media: str) -> tuple[str, str]:
+    """(fileName, mimetype) de un documento: nombre original con extensión.
+
+    La subida guarda `<32 hex>_<nombre><ext>`; se quita ese prefijo.
+    """
+    base = unquote(urlparse(url_media).path.rsplit("/", 1)[-1])
+    base = re.sub(r"^[0-9a-fA-F]{32}_", "", base)
+    nombre, ext = os.path.splitext(base)
+    if not ext and nombre.startswith("."):  # ".pdf": splitext lo toma como nombre
+        nombre, ext = "", nombre
+    ext = ext.lower()
+    if not nombre.strip():
+        base = "documento" + ext
+    return base, DOC_EXT_MIME.get(ext, "application/octet-stream")
 
 
 async def _post_evolution(client: httpx.AsyncClient, endpoint: str, payload: dict, headers: dict) -> dict:
@@ -129,6 +147,8 @@ async def _enviar_mensaje(
             }
             if tipo_media == "video":
                 media_message["fileName"] = _nombre_mp4(url_media)
+            elif tipo_media == "document":
+                media_message["fileName"], media_message["mimetype"] = _datos_documento(url_media)
             payload = {"number": destinatario, "mediaMessage": media_message}
             endpoint = f"{EVOLUTION_URL}/message/sendMedia/{instancia}"
             logger.debug(

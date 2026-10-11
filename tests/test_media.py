@@ -183,3 +183,43 @@ async def test_error_de_evolution_en_video_lanza(evo):
     evo.respuestas = [(500, {"error": "boom"})]
     with pytest.raises(RuntimeError, match="Evolution API 500"):
         await scheduler._enviar_mensaje("wa-1", "n", None, "video", "/static/uploads/v.mp4")
+
+
+# ── Documentos ───────────────────────────────────────────────────────────────
+
+HEX = "c8e77d83" * 4  # 32 caracteres hexadecimales
+
+@pytest.mark.parametrize("archivo,mime", [
+    ("Reporte.pdf", "application/pdf"),
+    ("Contrato final.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ("Ventas.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ("viejo.xls", "application/vnd.ms-excel"),
+    ("datos.csv", "text/csv"),
+    ("charla.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+])
+async def test_documento_envia_filename_original_y_mimetype(evo, archivo, mime):
+    from urllib.parse import quote
+    await scheduler._enviar_mensaje("wa-1", "n", "pie", "document", f"/static/uploads/{HEX}_{quote(archivo)}")
+    url, payload = evo.llamadas[0]
+    assert url == "http://evo/message/sendMedia/wa-1"
+    mm = payload["mediaMessage"]
+    assert mm["mediatype"] == "document"
+    assert mm["fileName"] == archivo
+    assert mm["mimetype"] == mime
+
+
+async def test_documento_sin_nombre_usa_documento_mas_extension(evo):
+    await scheduler._enviar_mensaje("wa-1", "n", None, "document", f"/static/uploads/{HEX}_.pdf")
+    mm = evo.llamadas[0][1]["mediaMessage"]
+    assert mm["fileName"] == "documento.pdf" and mm["mimetype"] == "application/pdf"
+
+
+@pytest.mark.parametrize("nombre,ext", [("Reporte.pdf", ".pdf"), ("ventas.xlsx", ".xlsx"),
+                                         ("a.xls", ".xls"), ("p.pptx", ".pptx"), ("d.csv", ".csv")])
+async def test_subida_documento_octet_stream_conserva_extension(uploads, nombre, ext):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/media/subir", files={"file": (nombre, b"contenido", "application/octet-stream")})
+    assert r.status_code == 201, r.text
+    assert r.json()["tipo_media"] == "document"
+    assert r.json()["url"].endswith(ext)
+    assert [p.suffix for p in uploads.iterdir()] == [ext]
