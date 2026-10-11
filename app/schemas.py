@@ -156,7 +156,7 @@ class PlantillaRead(ORMBase):
 
 class MensajeProgramadoRead(ORMBase):
     id_mensaje: uuid.UUID
-    id_sesion: uuid.UUID
+    id_sesion: uuid.UUID | None
     id_grupo: str
     texto_mensaje: str | None
     tipo_media: TipoMedia | None
@@ -165,4 +165,5 @@ class MensajeProgramadoRead(ORMBase):
     estado_envio: EstadoEnvio
     recurrencia: Recurrencia
     id_mensaje_origen: uuid.UUID | None
+    error_envio: str | None = None
     fecha_creacion: datetime
