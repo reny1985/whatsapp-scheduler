@@ -13,12 +13,13 @@
 - **`error_envio`**: columna nueva `mensajes_programados.error_envio TEXT` (`ADD COLUMN IF NOT EXISTS`); si Evolution falla, el mensaje queda `fallido` con el motivo.
 - **Pruebas**: 40 pasan (`tests/test_media.py` nuevo, verificación con ffprobe).
 - Desplegado a staging (deploy `75bf46c7`), `/health` ok.
+- **Corrección de pérdida de sesiones** (commit `3ccf9b3`): limpieza solo de sesiones nunca conectadas, `connecting` → `desconectado` si hay número, FK de mensajes a `SET NULL`. 59 pruebas. Reconexión probada en staging (deploy `595a4dd2`).
 
 ## Pruebas en staging (2026-10-11)
 Aprobadas: audio grabado, video grabado, video de galería, imágenes y documentos (pdf, docx, xlsx con nombre y extensión correctos).
 
 ## Release v1.0.1 (2026-10-11)
-Aprobado para producción. Pasos: respaldo `pg_dump` → merge a `main` → etiqueta `v1.0.1` → push → deploy a production → verificación de `/health` y de la columna `error_envio`.
+Aprobado para producción (incluye la corrección de sesiones). Pasos: respaldo `pg_dump` → merge a `main` → etiqueta `v1.0.1` → push → deploy a production → verificación de `/health` y de la columna `error_envio`.
 
 ## Pendientes futuros
 - Verificar el dominio en Resend y configurar `RESEND_FROM`.
