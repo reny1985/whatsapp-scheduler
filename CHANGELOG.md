@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.1 — 2026-10-11 — Audio, video y documentos
+
+- **Audio** convertido al subir a OGG Opus y enviado con `sendWhatsAppAudio` (el texto va como mensaje aparte)
+- **Video** (webm, mp4, mov, 3gp) convertido al subir a MP4 H.264 + AAC, máx. 1280 px de ancho; `fileName` `.mp4`
+- Si ffmpeg falla al convertir: error 422 claro y no se guarda el original
+- **Documentos**: `fileName` con el nombre original y extensión (ya no llegan como "BIN") y `mimetype` según la extensión
+- Se aceptan también `.xls`, `.pptx` y `.csv`; el archivo conserva su extensión aunque el navegador envíe `application/octet-stream`
+- **`error_envio`**: columna nueva en `mensajes_programados`; si Evolution falla, el mensaje queda `fallido` con el motivo
+- Pruebas automáticas: 52
+
 ## v1.0.0 — 2026-10-02 — Primera versión estable
 
 ### Funcionalidades incluidas

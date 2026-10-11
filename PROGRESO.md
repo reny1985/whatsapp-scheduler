@@ -1,6 +1,6 @@
 # PROGRESO — rama `fix-audio-video`
 
-Última actualización: 2026-10-04
+Última actualización: 2026-10-11
 
 ## Qué se hizo hoy
 - **Staging creado** en Railway: `https://thorough-adventure-staging.up.railway.app` (entorno `staging`, servicio `thorough-adventure` vinculado). Production (`https://enviafast.net`) no se tocó.
@@ -14,10 +14,11 @@
 - **Pruebas**: 40 pasan (`tests/test_media.py` nuevo, verificación con ffprobe).
 - Desplegado a staging (deploy `75bf46c7`), `/health` ok.
 
-## Qué falta
-1. Probar en staging: audio grabado, video grabado (Android/Chrome) y video de galería.
-2. Si todo funciona: respaldo `pg_dump` fuera del proyecto, unir la rama a `main`, etiqueta `v1.0.1`, push.
-3. Despliegue a production, solo cuando se escriba **"aprobado para producción"**.
+## Pruebas en staging (2026-10-11)
+Aprobadas: audio grabado, video grabado, video de galería, imágenes y documentos (pdf, docx, xlsx con nombre y extensión correctos).
+
+## Release v1.0.1 (2026-10-11)
+Aprobado para producción. Pasos: respaldo `pg_dump` → merge a `main` → etiqueta `v1.0.1` → push → deploy a production → verificación de `/health` y de la columna `error_envio`.
 
 ## Pendientes futuros
 - Verificar el dominio en Resend y configurar `RESEND_FROM`.
