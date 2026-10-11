@@ -11,7 +11,9 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    and_,
     func,
+    or_,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -91,7 +93,7 @@ class SesionWhatsApp(Base):
     usuario: Mapped["Usuario"] = relationship(back_populates="sesiones", lazy="raise")
     mensajes: Mapped[list["MensajeProgramado"]] = relationship(
         back_populates="sesion",
-        cascade="all, delete-orphan",
+        cascade="save-update, merge",  # borrar la sesión NO borra mensajes (FK SET NULL)
         passive_deletes=True,
         lazy="raise",
     )
@@ -113,10 +115,10 @@ class MensajeProgramado(Base):
         default=uuid.uuid4,
         server_default=text("uuid_generate_v4()"),
     )
-    id_sesion: Mapped[uuid.UUID] = mapped_column(
+    id_sesion: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sesiones_whatsapp.id_sesion", ondelete="CASCADE", name="fk_sesion"),
-        nullable=False,
+        ForeignKey("sesiones_whatsapp.id_sesion", ondelete="SET NULL", name="fk_sesion"),
+        nullable=True,
     )
     id_grupo: Mapped[str] = mapped_column(String(255), nullable=False)
     texto_mensaje: Mapped[str | None] = mapped_column(Text)
@@ -140,7 +142,7 @@ class MensajeProgramado(Base):
     fecha_creacion: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )
-    sesion: Mapped["SesionWhatsApp"] = relationship(
+    sesion: Mapped["SesionWhatsApp | None"] = relationship(
         back_populates="mensajes", lazy="raise"
     )
 
@@ -171,3 +173,11 @@ class Plantilla(Base):
 
     def __repr__(self) -> str:
         return f"<Plantilla {self.nombre}>"
+
+
+def condicion_sesion_nunca_conectada():
+    """Sesión que jamás tuvo número ni conexión. Nunca incluye una sesión que alguna vez conectó."""
+    return and_(
+        or_(SesionWhatsApp.numero_telefono.is_(None), SesionWhatsApp.numero_telefono == ""),
+        SesionWhatsApp.fecha_ultima_conexion.is_(None),
+    )

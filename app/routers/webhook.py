@@ -106,6 +106,10 @@ async def _sincronizar_conexion(instancia: str, estado_evo: str) -> None:
             logger.warning("Webhook connection.update: instancia '%s' no encontrada en BD", instancia)
             return
 
+        # connecting en una sesión que ya tuvo número no es un QR pendiente: está desconectada
+        if estado_evo.lower() == "connecting" and sesion.numero_telefono:
+            nuevo_estado = "desconectado"
+
         extra = {}
         if nuevo_estado == "conectado":
             info = await _fetch_instancia_info(instancia)

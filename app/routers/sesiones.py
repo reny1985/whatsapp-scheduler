@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_admin
 from app.database import get_db, AsyncSessionLocal
-from app.models import SesionWhatsApp, Usuario
+from app.models import SesionWhatsApp, Usuario, condicion_sesion_nunca_conectada
 from app.schemas import SesionWhatsAppCreate, SesionWhatsAppRead, PILOTO_ID_USUARIO
 
 logger = logging.getLogger("whatsapp_scheduler")
@@ -298,6 +298,7 @@ async def iniciar_pairing(
         select(SesionWhatsApp).where(
             SesionWhatsApp.id_usuario == id_usuario,
             SesionWhatsApp.estado_conexion == "qr_pendiente",
+            condicion_sesion_nunca_conectada(),
         )
     )
     pendientes = result.scalars().all()
@@ -660,6 +661,9 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
         "close": "desconectado",
         "connecting": "qr_pendiente",
     }.get(estado_evo, "desconectado")
+    # connecting en una sesión que ya tuvo número no es un QR pendiente: está desconectada
+    if estado_evo == "connecting" and sesion.numero_telefono:
+        nuevo_estado = "desconectado"
 
     extra = {}
     if nuevo_estado == "conectado":

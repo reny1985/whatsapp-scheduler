@@ -25,7 +25,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal as AsyncSessionFactory
-from app.models import MensajeProgramado, SesionWhatsApp
+from app.models import MensajeProgramado, SesionWhatsApp, condicion_sesion_nunca_conectada
 from app.routers.media import DOC_EXT_MIME
 
 logger = logging.getLogger("whatsapp_scheduler")
@@ -178,6 +178,7 @@ async def _procesar_mensajes_pendientes() -> None:
             select(MensajeProgramado)
             .join(SesionWhatsApp, MensajeProgramado.id_sesion == SesionWhatsApp.id_sesion)
             .where(
+                MensajeProgramado.id_sesion.is_not(None),  # sesión borrada → se ignora
                 MensajeProgramado.estado_envio == "programado",
                 MensajeProgramado.fecha_hora_disparo <= ventana,
             )
@@ -291,14 +292,14 @@ async def _procesar_mensajes_pendientes() -> None:
 
 async def _limpiar_sesiones_huerfanas() -> None:
     """
-    Elimina sesiones en qr_pendiente con más de 10 minutos sin vincular.
-    Aplica tanto a sesiones QR abandonadas como a pairing code no completado.
+    Elimina solo sesiones que nunca se conectaron (sin número y sin última conexión)
+    creadas hace más de 10 minutos: QR abandonado o pairing code no completado.
     """
     limite = datetime.now(timezone.utc) - timedelta(minutes=10)
     async with AsyncSessionFactory() as db:
         result = await db.execute(
             select(SesionWhatsApp).where(
-                SesionWhatsApp.estado_conexion == "qr_pendiente",
+                condicion_sesion_nunca_conectada(),
                 SesionWhatsApp.fecha_creacion < limite,
             )
         )
@@ -318,7 +319,8 @@ async def _limpiar_sesiones_huerfanas() -> None:
             )
         async with AsyncSessionFactory() as db:
             s = await db.get(SesionWhatsApp, sesion.id_sesion)
-            if s:
+            # Re-verifica: si conectó mientras se llamaba a Evolution, no se borra
+            if s and not s.numero_telefono and s.fecha_ultima_conexion is None:
                 await db.delete(s)
                 await db.commit()
         logger.info(

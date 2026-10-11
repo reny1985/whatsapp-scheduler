@@ -69,6 +69,14 @@ _STEPS = [
         REFERENCES mensajes_programados(id_mensaje) ON DELETE SET NULL
     """,
     "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS error_envio TEXT",
+    # Borrar una sesión no debe borrar sus mensajes: FK CASCADE → SET NULL (sin tocar datos)
+    "ALTER TABLE mensajes_programados ALTER COLUMN id_sesion DROP NOT NULL",
+    "ALTER TABLE mensajes_programados DROP CONSTRAINT IF EXISTS mensajes_programados_id_sesion_fkey",
+    """
+    ALTER TABLE mensajes_programados
+        ADD CONSTRAINT mensajes_programados_id_sesion_fkey
+        FOREIGN KEY (id_sesion) REFERENCES sesiones_whatsapp(id_sesion) ON DELETE SET NULL
+    """,
     "CREATE INDEX IF NOT EXISTS idx_mensajes_fecha_estado ON mensajes_programados (fecha_hora_disparo, estado_envio)",
 
     # ── grupos_whatsapp (caché) ────────────────────────────────────────────

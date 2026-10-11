@@ -156,7 +156,7 @@ class PlantillaRead(ORMBase):
 
 class MensajeProgramadoRead(ORMBase):
     id_mensaje: uuid.UUID
-    id_sesion: uuid.UUID
+    id_sesion: uuid.UUID | None
     id_grupo: str
     texto_mensaje: str | None
     tipo_media: TipoMedia | None
