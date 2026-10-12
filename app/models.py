@@ -77,6 +77,9 @@ class SesionWhatsApp(Base):
     )
     nombre_sesion: Mapped[str | None] = mapped_column(String(100))
     numero_telefono: Mapped[str | None] = mapped_column(String(30))
+    perfil_nombre: Mapped[str | None] = mapped_column(String(255))
+    perfil_foto_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    perfil_consultado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     instancia_evolution: Mapped[str] = mapped_column(
         String(100), unique=True, nullable=False
     )

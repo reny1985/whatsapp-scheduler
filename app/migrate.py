@@ -47,6 +47,10 @@ _STEPS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_sesiones_usuario ON sesiones_whatsapp (id_usuario)",
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS numero_telefono VARCHAR(30)",
+    # Perfil de WhatsApp (nombre y foto; la foto se guarda en disco, aquí solo cuándo)
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_nombre VARCHAR(255)",
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_foto_en TIMESTAMPTZ",
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_consultado_en TIMESTAMPTZ",
 
     # ── mensajes_programados ──────────────────────────────────────────────
     """

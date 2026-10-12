@@ -169,6 +169,7 @@
       <h1 id="topbar-title">Inicio</h1>
       <div class="spacer"></div>
       <span id="conn-badge" class="badge badge-muted">Cargando...</span>
+      <span id="perfil-avatar" class="perfil-avatar"></span>
       <span id="user-badge" class="user-badge"></span>
     </header>
 
@@ -177,8 +178,11 @@
       <div class="inicio">
 
         <div class="inicio-saludo">
-          <h2>Hola 👋</h2>
-          <p id="inicio-fecha">&nbsp;</p>
+          <span id="inicio-avatar"></span>
+          <div class="inicio-saludo-txt">
+            <h2 id="inicio-hola">Hola 👋</h2>
+            <p id="inicio-fecha">&nbsp;</p>
+          </div>
         </div>
 
         <button type="button" class="btn btn-primary btn-grande" onclick="navigate('programar')">＋ Programar mensaje</button>
@@ -563,23 +567,6 @@
         cnt.style.color = txt.value.length > 3800 ? 'var(--color-danger)' : 'var(--color-muted)';
       });
     }
-
-    // Actualizar badge de conexión en topbar
-    async function updateBadge() {
-      const badge = document.getElementById('conn-badge');
-      if (!badge) return;
-      try {
-        const lista = await fetch('/sesiones/').then(r => r.json());
-        const s = lista[0];
-        if (!s) { badge.className = 'badge badge-muted'; badge.textContent = 'Sin sesión'; return; }
-        const map = { conectado: ['badge-green','Conectado'], qr_pendiente: ['badge-orange','QR Pendiente'], desconectado: ['badge-red','Desconectado'] };
-        const [cls, lbl] = map[s.estado_conexion] || ['badge-muted', s.estado_conexion];
-        badge.className = 'badge ' + cls;
-        badge.textContent = lbl;
-      } catch { badge.className = 'badge badge-muted'; badge.textContent = 'Sin conexión'; }
-    }
-    updateBadge();
-    setInterval(updateBadge, 30000);
   });
 </script>
 </body>

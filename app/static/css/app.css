@@ -558,9 +558,8 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   .topbar h1 { font-size: .95rem; flex: 0 1 auto; }
   .topbar .spacer { flex: 1 1 0; min-width: 0; }
   .topbar #conn-badge { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
-  /* el correo se reduce a un ícono (el correo completo queda en el atributo title) */
-  .user-badge { font-size: 0; margin-left: 0; flex-shrink: 0; }
-  .user-badge:not(:empty)::before { content: '👤'; font-size: 1.05rem; }
+  /* el correo se oculta (queda la foto/ícono de perfil, y el correo en su title) */
+  .user-badge { display: none; }
   /* campo a todo el ancho; los botones pasan a la línea de abajo, uno al lado del otro */
   .fila-campo { flex-wrap: wrap; align-items: stretch; }
   .fila-campo > .form-control { flex: 1 1 100%; width: 100%; }
@@ -657,7 +656,9 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
    ============================================================ */
 .inicio { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .inicio .card { margin-bottom: 0; }
-.inicio-saludo h2 { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.inicio-saludo { display: flex; align-items: center; gap: 14px; }
+.inicio-saludo-txt { min-width: 0; }
+.inicio-saludo h2 { font-size: 1.5rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
 .inicio-saludo p { color: var(--color-muted); font-size: .9rem; margin-top: 4px; }
 .inicio-saludo p::first-letter { text-transform: uppercase; }
 .btn-grande { width: 100%; padding: 16px 20px; font-size: 1.05rem; border-radius: var(--radius-md); }
@@ -716,3 +717,19 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   .inicio-saludo h2 { font-size: 1.35rem; }
   .barras { gap: 5px; }
 }
+
+/* Foto / iniciales de perfil (redonda). Si la imagen falla, se queda el círculo con iniciales o el ícono */
+.avatar {
+  width: 40px; height: 40px; border-radius: 50%; overflow: hidden; position: relative; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-surface2); color: var(--color-green); font-weight: 700; font-size: .95rem;
+  border: 1px solid var(--color-border); user-select: none;
+}
+.avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.avatar svg { width: 55%; height: 55%; }
+.avatar-sm { width: 30px; height: 30px; font-size: .75rem; }
+.avatar-lg { width: 56px; height: 56px; font-size: 1.2rem; }
+.perfil-avatar { display: inline-flex; margin-left: 12px; flex-shrink: 0; }
+@media (max-width: 640px) { .perfil-avatar { margin-left: 0; } }
+.sesion-perfil { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sesion-perfil-nombre { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

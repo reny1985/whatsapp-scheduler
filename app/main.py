@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,7 +69,19 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 if static_dir.exists():
     app.mount("/static/css", StaticFiles(directory=str(static_dir / "css")), name="css")
     app.mount("/static/js", StaticFiles(directory=str(static_dir / "js")), name="js")
-app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
+class _UploadsStaticFiles(StaticFiles):
+    """Sirve los adjuntos, pero NO la carpeta avatars/: las fotos de perfil solo salen por
+    GET /sesiones/{id}/foto, que exige login."""
+
+    async def get_response(self, path, scope):
+        if path == "avatars" or path.startswith("avatars/"):
+            raise StarletteHTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
+app.mount("/static/uploads", _UploadsStaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.include_router(auth.router)
 app.include_router(sesiones.router)

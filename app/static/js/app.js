@@ -6,6 +6,23 @@
 const API = window.location.origin;  // mismo origen que el backend
 
 // Nombre visible de una sesión: número de teléfono > nombre_sesion > instancia
+const _ICONO_USUARIO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+
+function _iniciales(nombre) {
+  const p = String(nombre || '').trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return '';
+  return (p[0][0] + (p.length > 1 ? p[1][0] : '')).toUpperCase().replace(/[<>&"]/g, '');
+}
+
+// Círculo de perfil: foto si existe (se pide con login a /sesiones/{id}/foto); si no hay o falla,
+// iniciales del nombre o ícono de usuario. tam: '' | 'sm' | 'lg'
+function _avatarHTML(idSesion, fotoV, nombre, tam = '') {
+  const ini = _iniciales(nombre);
+  const img = (idSesion && fotoV)
+    ? `<img src="/sesiones/${idSesion}/foto?v=${encodeURIComponent(fotoV)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+  return `<span class="avatar${tam ? ' avatar-' + tam : ''}">${ini || _ICONO_USUARIO}${img}</span>`;
+}
+
 function _nombreSesion(s) {
   if (s.numero_telefono) return '+' + s.numero_telefono;
   if (s.nombre_sesion)   return s.nombre_sesion;
@@ -21,6 +38,53 @@ let currentUser = null;  // { id, email, rol }
 function mostrarAuthScreen(show = true) {
   document.getElementById('auth-screen').style.display = show ? 'flex' : 'none';
   document.getElementById('app-shell').style.display  = show ? 'none' : '';
+  if (show) detenerBadgeConexion(); else iniciarBadgeConexion();
+}
+
+// ---- Indicador de conexión + foto de perfil en la cabecera ----
+// Antes se consultaba al cargar la página (aún sin login → 401 → "Sin sesión") y no se refrescaba
+// hasta 30 s después. Ahora arranca al entrar a la app y distingue "sin sesión" de "no autorizado".
+let _badgeTimer = null;
+
+function _estadoBadge(lista) {
+  const s = lista.find(x => x.estado_conexion === 'conectado') || lista[0];
+  if (!s) return { cls: 'badge-muted', txt: 'Sin sesión', sesion: null };
+  const map = { conectado: ['badge-green', 'Conectado'], qr_pendiente: ['badge-orange', 'QR Pendiente'], desconectado: ['badge-red', 'Desconectado'] };
+  const [cls, txt] = map[s.estado_conexion] || ['badge-muted', s.estado_conexion];
+  return { cls, txt, sesion: s };
+}
+
+async function actualizarBadgeConexion() {
+  const badge = document.getElementById('conn-badge');
+  if (!badge) return;
+  try {
+    const lista = await apiFetch('/sesiones/');
+    const { cls, txt, sesion } = _estadoBadge(lista);
+    badge.className = 'badge ' + cls;
+    badge.textContent = txt;
+    const av = document.getElementById('perfil-avatar');
+    if (av) {
+      av.innerHTML = _avatarHTML(sesion?.id_sesion, sesion?.perfil_foto_en, sesion?.perfil_nombre, 'sm');
+      av.title = currentUser?.email || '';
+    }
+  } catch (e) {
+    if (e.status === 401) return;    // sin login: no se muestra un estado engañoso
+    badge.className = 'badge badge-muted';
+    badge.textContent = 'Sin conexión';
+  }
+}
+
+function iniciarBadgeConexion() {
+  actualizarBadgeConexion();
+  clearInterval(_badgeTimer);
+  _badgeTimer = setInterval(actualizarBadgeConexion, 30000);
+}
+
+function detenerBadgeConexion() {
+  clearInterval(_badgeTimer);
+  _badgeTimer = null;
+  const badge = document.getElementById('conn-badge');
+  if (badge) { badge.className = 'badge badge-muted'; badge.textContent = 'Cargando...'; }
 }
 
 function mostrarLogin() {
@@ -331,6 +395,7 @@ async function loadDashboard() {
   if (err) err.innerHTML = '';
   try {
     const d = await apiFetch('/dashboard/resumen');
+    _pintarSaludoInicio(d.perfil);
     _pintarSesionInicio(d.sesiones);
     _pintarTarjetasInicio(d.tarjetas);
     _pintarProximosInicio(d);
@@ -338,6 +403,14 @@ async function loadDashboard() {
   } catch (e) {
     if (err) err.innerHTML = `<div class="alert alert-error">No se pudo cargar el resumen: ${e.message}</div>`;
   }
+}
+
+function _pintarSaludoInicio(perfil) {
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const nombre = perfil && perfil.nombre ? perfil.nombre : '';
+  document.getElementById('inicio-hola').innerHTML = nombre ? `Hola, ${esc(nombre)} 👋` : 'Hola 👋';
+  document.getElementById('inicio-avatar').innerHTML =
+    _avatarHTML(perfil && perfil.id_sesion, perfil && perfil.foto_v, nombre, 'lg');
 }
 
 function _pintarSesionInicio(sesiones) {
@@ -435,12 +508,16 @@ function renderPanelSesion() {
   const tarjetas = todasLasSesiones.map(s => `
     <div class="card" id="card-sesion-${s.id_sesion}">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div style="flex:1;min-width:0">
+        <div class="sesion-perfil" style="flex:1">
+         ${_avatarHTML(s.id_sesion, s.perfil_foto_en, s.perfil_nombre, 'lg')}
+         <div style="min-width:0">
+          ${s.perfil_nombre ? `<div class="sesion-perfil-nombre">${String(s.perfil_nombre).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</div>` : ''}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span class="text-mono">${_nombreSesion(s)}</span>
             <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
           </div>
           ${!s.numero_telefono ? `<div class="text-muted" style="font-size:.72rem;margin-top:3px">Escaneando QR…</div>` : ''}
+         </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
@@ -532,6 +609,7 @@ async function verificarEstado(id_sesion) {
     const data = await apiFetch(`/sesiones/${id_sesion}/verificar`);
     await cargarSesionActiva();
     renderPanelSesion();
+    actualizarBadgeConexion();
     showAlert('alert-sesion', `${id_sesion.slice(0,8)}… → ${data.estado_evolution}`, data.estado_evolution === 'open' ? 'success' : 'info');
   } catch (e) {
     showAlert('alert-sesion', e.message, 'error');

@@ -87,7 +87,7 @@ _SQL_PROXIMOS = text("""
 """)
 
 _SQL_SESIONES = text("""
-    SELECT id_sesion, nombre_sesion, numero_telefono, estado_conexion
+    SELECT id_sesion, nombre_sesion, numero_telefono, estado_conexion, perfil_nombre, perfil_foto_en
     FROM sesiones_whatsapp
     WHERE id_usuario = :uid
     ORDER BY fecha_creacion
@@ -119,16 +119,26 @@ async def resumen(
     fallidos_7 = sum(d["fallidos"] for d in dias)
     terminados = enviados_7 + fallidos_7
 
+    # Perfil para el saludo: la primera sesión conectada (o, si no hay, la primera)
+    principal = next((s for s in sesiones if s["estado_conexion"] == "conectado"), sesiones[0] if sesiones else None)
+
     return {
         "zona": tz,
         "ahora": t["ahora"],
         "tiene_mensajes": t["total"] > 0,
+        "perfil": {
+            "id_sesion": str(principal["id_sesion"]) if principal else None,
+            "nombre": principal["perfil_nombre"] if principal else None,
+            "foto_v": principal["perfil_foto_en"].isoformat() if principal and principal["perfil_foto_en"] else None,
+        },
         "sesiones": [
             {
                 "id_sesion": str(s["id_sesion"]),
                 "numero": s["numero_telefono"] or "",
                 "estado": s["estado_conexion"],
                 "conectado": s["estado_conexion"] == "conectado",
+                "nombre": s["perfil_nombre"],
+                "foto_v": s["perfil_foto_en"].isoformat() if s["perfil_foto_en"] else None,
             }
             for s in sesiones
         ],

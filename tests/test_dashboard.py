@@ -33,6 +33,14 @@ def _inicio_dia_ec(dt_ec):
     return dt_ec.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _hoy_seguro():
+    """Un instante que siempre cae dentro de HOY en Ecuador (a mitad de camino entre la medianoche y ahora),
+    para que las pruebas no fallen si se ejecutan justo después de las 00:00."""
+    ahora = _ec_ahora()
+    inicio = _inicio_dia_ec(ahora)
+    return inicio + (ahora - inicio) / 2
+
+
 @pytest_asyncio.fixture
 async def datos(Session):
     async with Session() as db:
@@ -109,9 +117,9 @@ async def test_filtra_siempre_por_usuario(datos):
     s1 = await _sesion(datos, U1, "593961409996")
     s2 = await _sesion(datos, U2, "593900000000")
     ahora = _ec_ahora()
-    await _msg(datos, s1, ahora - timedelta(minutes=5))
+    await _msg(datos, s1, _hoy_seguro())
     for _ in range(3):
-        await _msg(datos, s2, ahora - timedelta(minutes=5))
+        await _msg(datos, s2, _hoy_seguro())
         await _msg(datos, s2, ahora + timedelta(hours=1), estado="programado", destino="593911111111@s.whatsapp.net")
 
     j1 = (await _resumen(datos, U1)).json()
@@ -126,10 +134,10 @@ async def test_filtra_siempre_por_usuario(datos):
 async def test_mensajes_sin_sesion_no_se_cuentan(datos):
     sid = await _sesion(datos, U1, "593961409996")
     ahora = _ec_ahora()
-    await _msg(datos, sid, ahora - timedelta(minutes=5))
+    await _msg(datos, sid, _hoy_seguro())
     async with datos() as db:     # mensaje huérfano (su sesión fue borrada)
         db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=None, id_grupo="1@g.us", texto_mensaje="x",
-                                 fecha_hora_disparo=ahora - timedelta(minutes=5), estado_envio="enviado"))
+                                 fecha_hora_disparo=_hoy_seguro(), estado_envio="enviado"))
         await db.commit()
     j = (await _resumen(datos)).json()
     assert j["tarjetas"]["enviados_hoy"] == 1
@@ -210,10 +218,10 @@ async def test_numero_de_consultas_no_depende_de_la_cantidad_de_mensajes(datos):
             assert r.status_code == 200
             return contador["n"]
 
-    await _msg(datos, sid, ahora - timedelta(minutes=5))
+    await _msg(datos, sid, _hoy_seguro())
     pocas = await medir()
     for _ in range(40):
-        await _msg(datos, sid, ahora - timedelta(minutes=5))
+        await _msg(datos, sid, _hoy_seguro())
         await _msg(datos, sid, ahora + timedelta(hours=2), estado="programado")
     muchas = await medir()
     app.dependency_overrides.clear()
