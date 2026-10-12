@@ -1,10 +1,14 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-11 (estado tras v1.0.4)
+Última actualización: 2026-10-11 (estado tras v1.0.5)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.4**, sobre `main`.
+**Production (`https://enviafast.net`) corre v1.0.5**, sobre `main`.
+
+- **v1.0.5** — contraseñas:
+  - Crear cuenta tiene el campo "Repetir contraseña": si no coinciden muestra "Las contraseñas no coinciden" debajo y no envía el formulario; también se valida en el backend (`/auth/setup` responde 422 con `confirmar_password` distinta). Mínimo de 8 caracteres con su mensaje.
+  - Botón de ojo independiente (mostrar/ocultar, con `aria-label`) en los 3 campos de contraseña: login, contraseña y repetir contraseña.
 
 - **v1.0.4** — ajustes de móvil y grupos:
   - En pantallas angostas (≤ 640 px) el botón "Salir" siempre se ve (el correo se reduce a un ícono y el título se acorta).
@@ -27,7 +31,7 @@
   - Documentos llegan con su nombre original, extensión y `mimetype` correctos (ya no como "BIN"); se aceptan también `.xls`, `.pptx` y `.csv`.
   - `error_envio`: si Evolution falla, el mensaje queda `fallido` con el motivo.
   - Corrección de la pérdida de sesiones y mensajes: la limpieza automática solo borra sesiones nunca conectadas; `connecting` en una sesión con número queda `desconectado`; la FK de mensajes pasó a `ON DELETE SET NULL`, así que borrar una sesión ya no borra sus mensajes.
-- 87 pruebas automáticas pasan.
+- 93 pruebas automáticas pasan.
 
 ## Números vinculados
 - **Production** (`enviafast.net`) usa el **0969829845** (593969829845).

@@ -103,6 +103,7 @@ class LoginRequest(BaseModel):
 class SetupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
+    confirmar_password: str
 
 
 class VerificarCodigoRequest(BaseModel):
@@ -162,6 +163,13 @@ async def setup(payload: SetupRequest, db: AsyncSession = Depends(get_db)):
     tenga la contraseña placeholder 'piloto-no-auth'.
     Después del registro envía un código de verificación por email.
     """
+    # Se valida primero y sin tocar la BD ni enviar correo. Nunca se registran contraseñas en el log.
+    if payload.password != payload.confirmar_password:
+        raise HTTPException(
+            status_code=422,
+            detail="Las contraseñas no coinciden",
+        )
+
     user = await db.get(Usuario, PILOTO_ID_USUARIO)
 
     if user and user.password_hash != "piloto-no-auth":
