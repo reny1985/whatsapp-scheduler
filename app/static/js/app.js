@@ -1354,6 +1354,8 @@ function limpiarAdjunto(e) {
   document.getElementById('hid-url-media').value = '';
   document.getElementById('hid-tipo-media').value = '';
   document.getElementById('inp-archivo').value = '';
+  document.getElementById('inp-foto-camara').value = '';
+  document.getElementById('inp-video-camara').value = '';
   document.getElementById('upload-placeholder').style.display = '';
   document.getElementById('upload-preview').style.display = 'none';
   document.getElementById('upload-progress').style.display = 'none';
@@ -1370,6 +1372,15 @@ let _grabStream   = null;
 let _grabTimer    = null;
 let _grabSecs     = 0;
 let _grabMime     = '';
+let _grabFacing   = 'environment';   // cámara trasera por defecto; 'user' = frontal
+
+function alternarCamara() {
+  _grabFacing = _grabFacing === 'environment' ? 'user' : 'environment';
+  const txt = _grabFacing === 'environment' ? 'trasera' : 'frontal';
+  const b = document.getElementById('btn-cambiar-camara');
+  if (b) b.textContent = `🔄 Cámara: ${txt}`;
+  document.querySelectorAll('.txt-camara').forEach(el => { el.textContent = `Cámara: ${txt}`; });
+}
 
 function _grabIds(ctx) {
   const p = ctx === 'edit' ? 'edit-' : '';
@@ -1404,7 +1415,7 @@ async function iniciarGrabacion(tipo, ctx = 'main') {
 
   try {
     const constraints = tipo === 'video'
-      ? { video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: true }
+      ? { video: { facingMode: { ideal: _grabFacing }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: true }
       : { audio: true };
     _grabStream = await navigator.mediaDevices.getUserMedia(constraints);
 
