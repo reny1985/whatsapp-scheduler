@@ -24,9 +24,9 @@
 - 69 pruebas automáticas pasan.
 
 ## Números vinculados
-- **Production** tiene vinculado el **593961409996**.
-- **Staging** usa otro número.
-- **Regla: no usar el mismo número en staging y production a la vez.**
+- **Production** (`enviafast.net`) usa el **0969829845** (593969829845).
+- **Staging** usa el **0961409996** (593961409996).
+- **Regla: nunca el mismo número en staging y production.**
 
 ## Entornos
 - Production: `https://enviafast.net`. Staging: `https://thorough-adventure-staging.up.railway.app`.
