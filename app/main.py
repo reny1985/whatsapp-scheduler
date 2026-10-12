@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import engine, get_db
 from app.migrate import run_migrations
-from app.routers import auth, media, mensajes, plantillas, sesiones, webhook
+from app.routers import auth, dashboard, media, mensajes, plantillas, sesiones, webhook
 from app.scheduler import crear_scheduler
 
 logging.basicConfig(
@@ -73,6 +73,7 @@ app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploa
 app.include_router(auth.router)
 app.include_router(sesiones.router)
 app.include_router(mensajes.router)
+app.include_router(dashboard.router)
 app.include_router(plantillas.router)
 app.include_router(media.router)
 app.include_router(webhook.router)

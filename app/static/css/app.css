@@ -47,15 +47,22 @@ button, input, select, textarea { font-family: inherit; }
 
 /* Sidebar */
 .sidebar {
-  width: 72px;
+  width: 188px;
   background: var(--color-surface);
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 20px 0;
-  gap: 8px;
+  align-items: stretch;
+  padding: 20px 12px;
+  gap: 6px;
   flex-shrink: 0;
+  overflow-y: auto;
+  /* el menú queda fijo a la altura de la pantalla: "Salir" siempre se ve abajo, aunque la página sea larga */
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  height: 100dvh;
 }
 .sidebar .logo {
   width: 42px;
@@ -65,43 +72,37 @@ button, input, select, textarea { font-family: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 16px;
+  margin: 0 0 14px 8px;
 }
 .sidebar .logo svg { width: 24px; height: 24px; fill: #fff; }
 .nav-btn {
-  width: 46px;
-  height: 46px;
+  width: 100%;
+  min-height: 44px;
   border-radius: var(--radius-sm);
   background: transparent;
   border: none;
   cursor: pointer;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 12px;
   color: var(--color-muted);
+  font-size: .92rem;
+  font-weight: 500;
   transition: background var(--transition), color var(--transition);
   position: relative;
 }
-.nav-btn:hover, .nav-btn.active {
+.nav-btn:hover { background: var(--color-surface2); color: var(--color-text); }
+.nav-btn.active {
   background: var(--color-surface2);
   color: var(--color-green);
+  box-shadow: inset 3px 0 0 var(--color-green);
 }
-.nav-btn svg { width: 22px; height: 22px; }
-.nav-btn .tooltip {
-  position: absolute;
-  left: 56px;
-  background: var(--color-surface2);
-  color: var(--color-text);
-  font-size: .78rem;
-  padding: 4px 10px;
-  border-radius: 6px;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity .15s;
-  border: 1px solid var(--color-border);
-}
-.nav-btn:hover .tooltip { opacity: 1; }
+.nav-btn svg { width: 22px; height: 22px; flex-shrink: 0; }
+.nav-btn .nav-label { line-height: 1.1; white-space: nowrap; }
+.nav-salir { margin-top: auto; }
+.nav-salir:hover { color: var(--color-danger); }
 
 /* Main area */
 .main-content {
@@ -521,7 +522,6 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
 
 /* Cabecera: el correo y el estado se acortan, el botón Salir nunca se sale de la pantalla */
 .user-badge { font-size: .78rem; color: var(--color-muted); margin-left: 12px; white-space: nowrap; }
-.btn-salir { margin-left: 8px; flex-shrink: 0; }
 .topbar h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Campo de contraseña con botón de ojo (mostrar/ocultar) */
@@ -545,7 +545,14 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
 
 /* Responsive */
 @media (max-width: 640px) {
-  .sidebar { width: 56px; }
+  .sidebar { width: 68px; padding: 12px 4px; align-items: center; gap: 4px; }
+  .sidebar .logo { margin: 0 0 8px; width: 38px; height: 38px; }
+  .nav-btn {
+    flex-direction: column; justify-content: center; gap: 3px;
+    padding: 8px 2px; min-height: 52px; width: 100%;
+  }
+  .nav-btn.active { box-shadow: inset 0 3px 0 var(--color-green); }
+  .nav-btn .nav-label { font-size: 11px; font-weight: 500; letter-spacing: -.01em; }
   .page { padding: 20px 16px; }
   .topbar { padding: 0 12px; gap: 8px; }
   .topbar h1 { font-size: .95rem; flex: 0 1 auto; }
@@ -554,7 +561,6 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   /* el correo se reduce a un ícono (el correo completo queda en el atributo title) */
   .user-badge { font-size: 0; margin-left: 0; flex-shrink: 0; }
   .user-badge:not(:empty)::before { content: '👤'; font-size: 1.05rem; }
-  .btn-salir { margin-left: 0; }
   /* campo a todo el ancho; los botones pasan a la línea de abajo, uno al lado del otro */
   .fila-campo { flex-wrap: wrap; align-items: stretch; }
   .fila-campo > .form-control { flex: 1 1 100%; width: 100%; }
@@ -645,3 +651,68 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
 }
 .grupo-opt:last-child { border-bottom: none; }
 .grupo-opt:hover, .grupo-opt.selected { background: rgba(37,211,102,.12); }
+
+/* ============================================================
+   INICIO
+   ============================================================ */
+.inicio { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.inicio .card { margin-bottom: 0; }
+.inicio-saludo h2 { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.inicio-saludo p { color: var(--color-muted); font-size: .9rem; margin-top: 4px; }
+.inicio-saludo p::first-letter { text-transform: uppercase; }
+.btn-grande { width: 100%; padding: 16px 20px; font-size: 1.05rem; border-radius: var(--radius-md); }
+
+.inicio-estado .estado-fila {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--color-border);
+}
+.inicio-estado .estado-fila:last-child { border-bottom: none; padding-bottom: 0; }
+.estado-numero { flex: 1; min-width: 140px; font-weight: 600; }
+.estado-texto { display: inline-flex; align-items: center; gap: 8px; font-size: .88rem; }
+.punto { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.punto-verde { background: var(--color-green); box-shadow: 0 0 0 3px rgba(37,211,102,.18); }
+.punto-rojo { background: var(--color-danger); box-shadow: 0 0 0 3px rgba(241,92,109,.18); }
+.punto-naranja { background: var(--color-warning); }
+.punto-azul { background: var(--color-info); }
+
+.inicio-tarjetas { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.tarjeta-num {
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  padding: 16px; text-align: left; cursor: pointer; color: var(--color-text);
+  display: flex; flex-direction: column; gap: 6px; font-family: inherit;
+  transition: border-color var(--transition), background var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.tarjeta-num:hover, .tarjeta-num:focus-visible { border-color: var(--color-green); background: var(--color-surface2); outline: none; }
+.tarjeta-valor { font-size: 2.2rem; font-weight: 700; line-height: 1; }
+.tarjeta-nombre { font-size: .82rem; color: var(--color-muted); }
+.tarjeta-fallidos .tarjeta-valor.hay { color: var(--color-danger); }
+
+.inicio-titulo { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.envio-item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--color-border); }
+.envio-item:last-child { border-bottom: none; }
+.envio-ico { font-size: 1.3rem; width: 28px; text-align: center; flex-shrink: 0; }
+.envio-info { flex: 1; min-width: 0; }
+.envio-destino { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.envio-fecha { font-size: .8rem; color: var(--color-muted); margin-top: 2px; }
+
+.vacio { text-align: center; padding: 20px 8px; color: var(--color-muted); }
+.vacio p { margin-bottom: 14px; font-size: .95rem; }
+
+.barras { display: flex; align-items: flex-end; gap: 8px; height: 150px; padding-top: 18px; }
+.barra-col { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.barra-cant { font-size: .75rem; color: var(--color-text); height: 16px; line-height: 16px; }
+.barra-area { width: 100%; flex: 1; display: flex; align-items: flex-end; }
+.barra { width: 100%; background: var(--color-green); border-radius: 4px 4px 0 0; min-height: 3px; transition: height .3s; }
+.barra.cero { background: var(--color-border); }
+.barra-dia { font-size: .72rem; color: var(--color-muted); margin-top: 6px; text-transform: capitalize; }
+.barra-col.hoy .barra-dia { color: var(--color-green); font-weight: 600; }
+.tasa-entrega { margin-top: 14px; font-size: .95rem; color: var(--color-muted); }
+.tasa-entrega strong { color: var(--color-text); font-size: 1.15rem; }
+
+@media (max-width: 640px) {
+  .inicio-tarjetas { grid-template-columns: repeat(2, 1fr); }
+  .tarjeta-valor { font-size: 2rem; }
+  .inicio-saludo h2 { font-size: 1.35rem; }
+  .barras { gap: 5px; }
+}
