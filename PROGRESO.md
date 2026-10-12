@@ -1,10 +1,16 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-11 (estado tras v1.0.3)
+Última actualización: 2026-10-11 (estado tras v1.0.4)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.3**, sobre `main`.
+**Production (`https://enviafast.net`) corre v1.0.4**, sobre `main`.
+
+- **v1.0.4** — ajustes de móvil y grupos:
+  - En pantallas angostas (≤ 640 px) el botón "Salir" siempre se ve (el correo se reduce a un ícono y el título se acorta).
+  - Las filas "campo + botones" (número personal, grupo, enlace/JID, agenda) usan todo el ancho y los botones pasan a la línea de abajo.
+  - Botón "Verificar" de grupos (Programar y edición): muestra nombre y participantes, o avisa si el grupo ya no existe o el número ya no pertenece a él (`GET /sesiones/{id}/verificar-grupo`, usa `group/findGroupInfos` de Evolution 1.8.6).
+  - "Recargar" grupos sincroniza desde WhatsApp (`?forzar=true`) con indicador de carga y mensaje si falla; un candado por sesión en el backend evita sincronizaciones dobles.
 
 - **v1.0.3** — correo de verificación:
   - Se envía desde `Enviafast <no-reply@enviafast.net>` (dominio verificado en Resend, región São Paulo); asunto y cuerpo dicen "Enviafast".
@@ -21,7 +27,7 @@
   - Documentos llegan con su nombre original, extensión y `mimetype` correctos (ya no como "BIN"); se aceptan también `.xls`, `.pptx` y `.csv`.
   - `error_envio`: si Evolution falla, el mensaje queda `fallido` con el motivo.
   - Corrección de la pérdida de sesiones y mensajes: la limpieza automática solo borra sesiones nunca conectadas; `connecting` en una sesión con número queda `desconectado`; la FK de mensajes pasó a `ON DELETE SET NULL`, así que borrar una sesión ya no borra sus mensajes.
-- 69 pruebas automáticas pasan.
+- 87 pruebas automáticas pasan.
 
 ## Números vinculados
 - **Production** (`enviafast.net`) usa el **0969829845** (593969829845).
@@ -41,3 +47,4 @@
 5. Seguridad de Evolution: verificar la clave global y poner HTTPS.
 6. Ondas en notas de voz: requieren Evolution v2 (PR #2346); probar antes en un servidor aparte.
 7. Agregar los botones de cámara nativa al formulario de edición de mensajes.
+8. Error de consola "Unexpected token 'export'": viene de `utils.js` de intl-tel-input, que se carga como script clásico (es un módulo). Investigar si afecta la validación/formato de números.

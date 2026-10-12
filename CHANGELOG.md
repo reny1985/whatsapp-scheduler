@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.4 — 2026-10-11 — Ajustes de móvil y grupos
+
+- **Salir visible en móvil**: en pantallas angostas (≤ 640 px) el correo de la cabecera se reduce a un ícono y el título se acorta con "…", así el botón Salir ya no queda fuera de la pantalla
+- **Campos con botones a ancho completo**: número personal, grupo, enlace/JID, agenda y edición — la casilla ocupa todo el ancho y los botones pasan a la línea de abajo, uno al lado del otro
+- **Verificar grupo** (Programar mensaje y edición): muestra el nombre del grupo y el número de participantes, o "El grupo ya no existe o tu número ya no pertenece a él"; si WhatsApp no responde, un error claro. Nuevo `GET /sesiones/{id}/verificar-grupo` (Evolution `group/findGroupInfos`); la clave de Evolution no sale del servidor
+- **Recargar grupos sincroniza desde WhatsApp** (`?forzar=true`) con indicador de carga y mensaje si falla; si la lista está vacía al abrir Programar se sincroniza sola; un **candado por sesión** en el backend y el botón deshabilitado evitan sincronizaciones dobles
+- Antes, con la caché vacía la primera carga tardaba 30–45 s sin indicador y, si Evolution fallaba, devolvía una lista vacía sin avisar
+- Pruebas automáticas: 87
+
 ## v1.0.3 — 2026-10-11 — Correo de verificación
 
 - El correo de verificación sale de **Enviafast <no-reply@enviafast.net>**, con el dominio verificado en Resend; el asunto y el cuerpo dicen "Enviafast"
