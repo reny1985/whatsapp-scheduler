@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.2 — 2026-10-11 — Forma: selector de países y cámara
+
+- **Selector de países** legible: panel desplegable con el tema oscuro de la app (fondo oscuro, texto claro, código en gris claro, resaltado al pasar/seleccionar, buscador incluido), en celular y escritorio; `app.css` se carga después de intl-tel-input
+- **Cámara nativa**: botones "Tomar foto" y "Grabar video" (`capture="environment"`, cámara trasera por defecto) que usan el mismo flujo de subida y conversión
+- Grabación de video en la página renombrada "Webcam" (solo equipos con puntero preciso) con botón para alternar cámara trasera/frontal (trasera por defecto)
+- Grabación de audio sin cambios
+- CLAUDE.md: versión de Evolution API corregida a 1.8.6
+
 ## v1.0.1 — 2026-10-11 — Audio, video y documentos
 
 - **Audio** convertido al subir a OGG Opus y enviado con `sendWhatsAppAudio` (el texto va como mensaje aparte)

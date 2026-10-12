@@ -45,7 +45,7 @@
 ## Stack y entorno
 
 - Backend: FastAPI + PostgreSQL (asyncpg)
-- Evolution API v1.8.7 en Hetzner: `http://159.69.248.218` (puerto 80, nginx proxy)
+- Evolution API v1.8.6 en Hetzner: `http://159.69.248.218` (puerto 80, nginx proxy)
 - Deploy: Railway (`thorough-adventure`, proyecto `9d304e4c-...`)
 - URL producción: `https://enviafast.net`
 - Deploy siempre desde `backend/`, nunca desde la raíz

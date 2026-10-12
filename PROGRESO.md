@@ -1,6 +1,6 @@
 # PROGRESO — rama `fix-audio-video`
 
-Última actualización: 2026-10-11
+Última actualización: 2026-10-11 (v1.0.2)
 
 ## Qué se hizo hoy
 - **Staging creado** en Railway: `https://thorough-adventure-staging.up.railway.app` (entorno `staging`, servicio `thorough-adventure` vinculado). Production (`https://enviafast.net`) no se tocó.
@@ -25,3 +25,4 @@ Aprobado para producción (incluye la corrección de sesiones). Pasos: respaldo 
 - Verificar el dominio en Resend y configurar `RESEND_FROM`.
 - Mostrar un error al usuario cuando el correo de verificación no se envía.
 - Separar los datos por cliente.
+- Ondas en notas de voz requieren Evolution v2 (PR #2346); no actualizar sin probar antes en un servidor aparte.
