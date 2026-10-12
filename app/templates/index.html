@@ -140,8 +140,8 @@
       <h1 id="topbar-title">Dashboard</h1>
       <div class="spacer"></div>
       <span id="conn-badge" class="badge badge-muted">Cargando...</span>
-      <span id="user-badge" style="font-size:.78rem;color:var(--color-muted);margin-left:12px"></span>
-      <button class="btn btn-sm btn-secondary" style="margin-left:8px" onclick="logoutUser()">Salir</button>
+      <span id="user-badge" class="user-badge"></span>
+      <button class="btn btn-sm btn-secondary btn-salir" onclick="logoutUser()">Salir</button>
     </header>
 
     <!-- ===== PAGE: DASHBOARD ===== -->
@@ -250,16 +250,19 @@
             <!-- input oculto — guarda el JID del grupo seleccionado -->
             <input type="hidden" id="sel-grupo" />
             <div style="position:relative">
-              <div style="display:flex;gap:8px">
+              <div class="fila-campo">
                 <input id="inp-grupo-buscar" class="form-control" placeholder="Buscar grupo..."
-                       autocomplete="off" style="flex:1"
+                       autocomplete="off"
                        oninput="filtrarGrupos(this.value)"
                        onfocus="abrirListaGrupos()"
                        onkeydown="if(event.key==='Escape')cerrarListaGrupos()" />
-                <button type="button" class="btn btn-sm btn-secondary" onclick="cerrarListaGrupos();loadGrupos()" title="Recargar grupos" style="white-space:nowrap">↺ Recargar</button>
+                <button type="button" id="btn-recargar-grupos" class="btn btn-sm btn-secondary" onclick="cerrarListaGrupos();loadGrupos(true)" title="Sincronizar grupos desde WhatsApp" style="white-space:nowrap">↺ Recargar</button>
+                <button type="button" id="btn-verificar-grupo" class="btn btn-sm btn-secondary" onclick="verificarGrupo('main')" title="Comprobar que el grupo existe y que puedes escribir en él" style="white-space:nowrap">✔ Verificar</button>
               </div>
               <div id="lista-grupos-drop" style="display:none;position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:200;max-height:260px;overflow-y:auto;background:var(--color-card,#1a1f2e);border:1px solid var(--color-border);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.5)"></div>
             </div>
+            <div id="grupos-estado" style="display:none;margin-top:8px;font-size:.82rem"></div>
+            <div id="grupo-verificado" style="display:none;margin-top:8px;font-size:.82rem;padding:8px 12px;border-radius:6px"></div>
             <p style="font-size:.78rem;color:var(--color-muted);margin-top:6px">
               Los grupos se obtienen de tu sesión conectada. Escribe para buscar.
             </p>
@@ -268,7 +271,7 @@
           <!-- Destino: número personal -->
           <div class="form-group" id="grp-personal" style="display:none">
             <label class="form-label" for="inp-numero">Número de teléfono *</label>
-            <div style="display:flex;gap:8px;align-items:flex-start">
+            <div class="fila-campo">
               <input id="inp-numero" class="form-control" placeholder="593961409996 (con código de país, sin +)" type="tel" />
               <button type="button" id="btn-verificar-numero" class="btn btn-secondary btn-sm" onclick="verificarNumeroWA()" style="white-space:nowrap;padding:9px 14px">
                 Verificar
@@ -281,7 +284,7 @@
 
             <!-- Panel agenda de contactos -->
             <div id="panel-contactos" style="display:none;border:1px solid var(--color-border);border-radius:8px;margin-top:10px;overflow:visible">
-              <div style="padding:10px 14px;background:var(--color-surface);display:flex;gap:8px;align-items:center">
+              <div class="fila-campo" style="padding:10px 14px;background:var(--color-surface);align-items:center">
                 <input id="inp-buscar-contacto" class="form-control" placeholder="Buscar por nombre o número..." style="flex:1;padding:7px 12px;font-size:.85rem" oninput="filtrarContactos(this.value)" autocomplete="off" />
                 <button type="button" class="btn btn-sm btn-secondary" onclick="togglePanelContactos()">✕</button>
               </div>
@@ -298,7 +301,7 @@
           <!-- Destino: enlace o JID manual -->
           <div class="form-group" id="grp-manual" style="display:none">
             <label class="form-label" for="inp-jid-manual">Enlace de invitación o JID del grupo *</label>
-            <div style="display:flex;gap:8px;align-items:flex-start">
+            <div class="fila-campo">
               <input id="inp-jid-manual" class="form-control" placeholder="https://chat.whatsapp.com/XXXXXX  ó  120363041234567890@g.us" />
               <button type="button" id="btn-resolver-jid" class="btn btn-secondary btn-sm" onclick="resolverEnlaceGrupo()" style="white-space:nowrap;padding:9px 14px">
                 Resolver
@@ -464,6 +467,17 @@
     <input type="hidden" id="edit-id" />
     <input type="hidden" id="edit-url-media" />
     <input type="hidden" id="edit-tipo-media" />
+
+    <div class="form-group" id="edit-grp-destino" style="display:none">
+      <label class="form-label" for="edit-grupo-nombre">Grupo de destino</label>
+      <input type="hidden" id="edit-grupo-jid" />
+      <input type="hidden" id="edit-grupo-sesion" />
+      <div class="fila-campo">
+        <input id="edit-grupo-nombre" class="form-control" readonly />
+        <button type="button" class="btn btn-sm btn-secondary" onclick="verificarGrupo('edit')" title="Comprobar que el grupo existe y que puedes escribir en él" style="white-space:nowrap">✔ Verificar</button>
+      </div>
+      <div id="edit-grupo-verificado" style="display:none;margin-top:8px;font-size:.82rem;padding:8px 12px;border-radius:6px"></div>
+    </div>
 
     <div class="form-group">
       <label class="form-label" for="edit-texto">Mensaje</label>
