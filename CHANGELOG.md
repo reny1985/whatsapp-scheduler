@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.3 — 2026-10-11 — Correo de verificación
+
+- El correo de verificación sale de **Enviafast <no-reply@enviafast.net>**, con el dominio verificado en Resend; el asunto y el cuerpo dicen "Enviafast"
+- La app **espera la respuesta de Resend** (timeout 10 s) en `/auth/setup` y `/auth/reenviar-codigo`; si falla, devuelve un error claro ("No pudimos enviar el correo, intenta de nuevo en unos minutos"), que se muestra en las pantallas de registro y verificación, y registra el motivo en el log sin exponer la clave
+- Si el envío falla no se guarda ningún cambio, para poder reintentar el registro
+- Sin `RESEND_API_KEY` el envío cuenta como fallo y ya no se escribe el código en el log
+- Pruebas automáticas: 69
+
 ## v1.0.2 — 2026-10-11 — Forma: selector de países y cámara
 
 - **Selector de países** legible: panel desplegable con el tema oscuro de la app (fondo oscuro, texto claro, código en gris claro, resaltado al pasar/seleccionar, buscador incluido), en celular y escritorio; `app.css` se carga después de intl-tel-input
