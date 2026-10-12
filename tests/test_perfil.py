@@ -35,6 +35,7 @@ class _Evo:
     """Simula Evolution (POST chat/fetchProfile) y la descarga de la foto (GET)."""
     perfil = (200, {"name": "Renato Astudillo", "picture": URL_FOTO, "email": "privado@x.com"})
     foto = (200, JPEG, "image/jpeg")
+    instancias = (200, [{"instance": {"profileName": "RENY"}}])
     excepcion = None
     llamadas: list = []
 
@@ -50,7 +51,10 @@ class _Evo:
         return httpx.Response(st, json=body, request=httpx.Request("POST", url))
 
     async def get(self, url, **k):
-        _Evo.llamadas.append(("GET", url, None))
+        _Evo.llamadas.append(("GET", url, k.get("headers")))
+        if url.endswith("/instance/fetchInstances"):          # nombre de perfil (pushName) de Evolution
+            st, body = _Evo.instancias
+            return httpx.Response(st, json=body, request=httpx.Request("GET", url))
         st, contenido, tipo = _Evo.foto
         return httpx.Response(st, content=contenido, headers={"content-type": tipo}, request=httpx.Request("GET", url))
 
@@ -60,6 +64,7 @@ def mundo(Session, monkeypatch, tmp_path):
     _Evo.llamadas, _Evo.excepcion = [], None
     _Evo.perfil = (200, {"name": "Renato Astudillo", "picture": URL_FOTO, "email": "privado@x.com"})
     _Evo.foto = (200, JPEG, "image/jpeg")
+    _Evo.instancias = (200, [{"instance": {}}])
     monkeypatch.setattr(perfil.httpx, "AsyncClient", _Evo)
     monkeypatch.setattr(perfil, "AsyncSessionLocal", Session)
     monkeypatch.setattr(perfil, "EVOLUTION_API_KEY", CLAVE)
@@ -297,3 +302,64 @@ async def test_resumen_sin_perfil_no_falla(mundo):
     assert j["perfil"]["nombre"] is None and j["perfil"]["foto_v"] is None
     vacio = (await _get(mundo, "/dashboard/resumen", usuario=uuid.UUID("00000000-0000-0000-0000-000000000099"))).json()
     assert vacio["perfil"] == {"id_sesion": None, "nombre": None, "foto_v": None}
+
+
+# ── Nombre de perfil: orden de los campos ────────────────────────────────────
+
+async def test_cuenta_personal_usa_profileName_porque_fetchProfile_trae_el_numero(mundo):
+    """Caso real de production: fetchProfile.name = '+593 96 982 9845' y fetchInstances.profileName = 'RENY'."""
+    sid = await _sesion(mundo)
+    _Evo.perfil = (200, {"name": "+593 96 982 9845", "picture": None})
+    _Evo.instancias = (200, [{"instance": {"instanceName": "x", "profileName": "RENY"}}])
+    assert await perfil.actualizar_perfil_si_corresponde(sid) is True
+    assert (await _leer(mundo, sid)).perfil_nombre == "RENY"
+    get = next(l for l in _Evo.llamadas if l[0] == "GET" and l[1].endswith("/instance/fetchInstances"))
+    assert get[2]["apikey"] == CLAVE                      # fetchInstances solo acepta la clave global (en el servidor)
+
+
+async def test_si_fetchInstances_no_trae_nombre_usa_el_campo_alternativo_de_fetchProfile(mundo):
+    sid = await _sesion(mundo)
+    _Evo.perfil = (200, {"name": "Renato Astudillo", "picture": None})
+    _Evo.instancias = (200, [{"instance": {"profileName": None}}])
+    await perfil.actualizar_perfil_si_corresponde(sid)
+    assert (await _leer(mundo, sid)).perfil_nombre == "Renato Astudillo"
+
+
+async def test_si_fetchInstances_falla_el_nombre_sale_de_fetchProfile(mundo):
+    sid = await _sesion(mundo)
+    _Evo.perfil = (200, {"name": "Renato", "picture": None})
+    _Evo.instancias = (500, {"error": "boom"})
+    await perfil.actualizar_perfil_si_corresponde(sid)
+    assert (await _leer(mundo, sid)).perfil_nombre == "Renato"
+
+
+async def test_pushName_de_fetchProfile_tambien_sirve(mundo):
+    sid = await _sesion(mundo)
+    _Evo.perfil = (200, {"name": "+593 96 982 9845", "pushName": "Reny", "picture": None})
+    await perfil.actualizar_perfil_si_corresponde(sid)
+    assert (await _leer(mundo, sid)).perfil_nombre == "Reny"
+
+
+async def test_ningun_campo_trae_nombre_se_deja_como_esta_y_se_reintenta_en_1_hora(mundo):
+    sid = await _sesion(mundo)
+    _Evo.perfil = (200, {"name": "+593 96 982 9845", "picture": None})
+    _Evo.instancias = (200, [{"instance": {"profileName": " "}}])
+    assert await perfil.actualizar_perfil_si_corresponde(sid) is False
+    s = await _leer(mundo, sid)
+    assert s.perfil_nombre is None                         # sigue "Hola 👋" sin nombre
+    ahora = datetime.now(timezone.utc)
+    assert not perfil.debe_actualizarse(s, ahora) and perfil.debe_actualizarse(s, ahora + timedelta(hours=1, minutes=1))
+
+
+async def test_no_pisa_un_nombre_guardado_con_un_numero(mundo):
+    sid = await _sesion(mundo)
+    await perfil.actualizar_perfil_si_corresponde(sid)      # guarda "Renato Astudillo"
+    _Evo.perfil = (200, {"name": "+593 96 982 9845", "picture": None})
+    await perfil.actualizar_perfil_si_corresponde(sid, forzar=True)
+    assert (await _leer(mundo, sid)).perfil_nombre == "Renato Astudillo"
+
+
+async def test_dos_eventos_casi_simultaneos_consultan_una_sola_vez(mundo):
+    sid = await _sesion(mundo)
+    await asyncio.gather(perfil.actualizar_perfil_si_corresponde(sid), perfil.actualizar_perfil_si_corresponde(sid))
+    assert len([l for l in _Evo.llamadas if l[0] == "POST"]) == 1

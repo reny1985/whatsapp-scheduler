@@ -19,7 +19,7 @@ from pydantic import (
 
 EstadoSuscripcion = Literal["prueba", "activa", "suspendida", "cancelada"]
 EstadoConexion = Literal["qr_pendiente", "conectado", "desconectado"]
-EstadoEnvio = Literal["programado", "enviando", "enviado", "fallido", "cancelado"]
+EstadoEnvio = Literal["programado", "en_cola", "enviando", "enviado", "fallido", "cancelado", "vencido"]
 TipoMedia = Literal["image", "video", "audio", "document"]
 Recurrencia = Literal["none", "daily", "weekly", "monthly"]
 

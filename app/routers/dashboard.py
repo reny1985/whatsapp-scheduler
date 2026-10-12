@@ -32,7 +32,10 @@ _SQL_TARJETAS = text("""
     )
     SELECT
         to_char(t.ahora, 'YYYY-MM-DD"T"HH24:MI:SS') AS ahora,
-        count(m.id_mensaje) FILTER (WHERE m.estado_envio IN ('programado', 'enviando'))  AS pendientes,
+        count(m.id_mensaje) FILTER (WHERE m.estado_envio IN ('programado', 'en_cola', 'enviando')) AS pendientes,
+        count(m.id_mensaje) FILTER (WHERE m.estado_envio IN ('programado', 'en_cola', 'enviando')
+                                      AND m.estado_sesion <> 'conectado')                AS pendientes_desconectado,
+        count(m.id_mensaje) FILTER (WHERE m.estado_envio = 'vencido')                    AS vencidos,
         count(m.id_mensaje) FILTER (WHERE m.estado_envio = 'enviado'
                                       AND m.fecha_hora_disparo >= t.hoy_ini
                                       AND m.fecha_hora_disparo <  t.hoy_fin)             AS enviados_hoy,
@@ -45,7 +48,7 @@ _SQL_TARJETAS = text("""
         count(m.id_mensaje)                                                              AS total
     FROM t
     LEFT JOIN (
-        SELECT m.*
+        SELECT m.*, s.estado_conexion AS estado_sesion
         FROM mensajes_programados m
         JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
         WHERE s.id_usuario = :uid
@@ -81,7 +84,7 @@ _SQL_PROXIMOS = text("""
     JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
     LEFT JOIN grupos_whatsapp g ON g.id_grupo = m.id_grupo AND g.id_sesion = m.id_sesion
     WHERE s.id_usuario = :uid
-      AND m.estado_envio IN ('programado', 'enviando')
+      AND m.estado_envio IN ('programado', 'en_cola', 'enviando')
     ORDER BY m.fecha_hora_disparo ASC
     LIMIT :limite
 """)
@@ -147,7 +150,12 @@ async def resumen(
             "enviados_hoy": t["enviados_hoy"],
             "enviados_mes": t["enviados_mes"],
             "fallidos_mes": t["fallidos_mes"],
+            "vencidos": t["vencidos"],
         },
+        # Aviso del Inicio: hay mensajes esperando y su WhatsApp está desconectado
+        "aviso_desconexion": (
+            {"pendientes": t["pendientes_desconectado"]} if t["pendientes_desconectado"] > 0 else None
+        ),
         "proximos": [
             {
                 "id_mensaje": str(m["id_mensaje"]),

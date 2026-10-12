@@ -40,6 +40,11 @@ BASE_PUBLIC_URL = os.getenv("BASE_PUBLIC_URL", "http://host.docker.internal:8000
 JITTER_MIN = 1
 JITTER_MAX = 60
 
+# Retraso máximo (minutos) entre la hora programada y el momento en que el programador TOMA el mensaje
+# para enviarlo. Se mide al tomarlo, no cuando sale: un mensaje que entró a la cola a tiempo se envía
+# siempre, aunque la cola tarde más. Si no pudo tomarse a tiempo, queda "vencido". ÚNICO lugar donde se define.
+TOLERANCIA_RETRASO_MIN = 5
+
 
 def _siguiente_disparo(base: datetime, recurrencia: str) -> datetime | None:
     """Calcula el próximo disparo según la recurrencia. Retorna None si es 'none'."""
@@ -169,125 +174,178 @@ async def _enviar_mensaje(
         return await _post_evolution(client, endpoint, payload, headers)
 
 
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _motivo_vencido(sesion, retraso: timedelta) -> str:
+    """Por qué no pudo tomarse a tiempo (mensaje para el usuario)."""
+    minutos = int(retraso.total_seconds() // 60)
+    if sesion is None:
+        causa = "La sesión de WhatsApp fue eliminada antes del envío"
+    elif sesion.estado_conexion != "conectado":
+        causa = "WhatsApp estaba desconectado a la hora programada"
+    elif not sesion.token_autorizacion:
+        causa = "La sesión no tiene credenciales: vuelve a vincular el número"
+    else:
+        causa = "El servidor no pudo tomarlo a tiempo (estuvo apagado o sin actividad)"
+    return f"{causa}. Se detectó con {minutos} min de retraso (tolerancia: {TOLERANCIA_RETRASO_MIN} min)."
+
+
+def _proxima_ocurrencia_futura(base: datetime, recurrencia: str, ahora: datetime) -> datetime | None:
+    """Primer disparo de la serie que cae en el futuro (si hubo una caída larga, salta los atrasados)."""
+    siguiente = _siguiente_disparo(base, recurrencia)
+    for _ in range(400):
+        if siguiente is None or siguiente > ahora:
+            return siguiente
+        siguiente = _siguiente_disparo(siguiente, recurrencia)
+    return siguiente
+
+
+def _clonar_siguiente(db: AsyncSession, msg: MensajeProgramado, siguiente: datetime) -> None:
+    proximo = MensajeProgramado(
+        id_mensaje=uuid.uuid4(),
+        id_sesion=msg.id_sesion,
+        id_grupo=msg.id_grupo,
+        texto_mensaje=msg.texto_mensaje,
+        tipo_media=msg.tipo_media,
+        url_media=msg.url_media,
+        fecha_hora_disparo=siguiente,
+        estado_envio="programado",
+        recurrencia=msg.recurrencia,
+        id_mensaje_origen=msg.id_mensaje,
+    )
+    db.add(proximo)
+    logger.info(
+        "🔁 Próxima ocurrencia programada: %s → %s (%s)",
+        msg.id_mensaje, proximo.id_mensaje, siguiente.isoformat(),
+    )
+
+
+async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
+    """Fase 1 — TOMAR: mide el retraso de cada mensaje vencido-o-por-vencer y lo deja
+    'en_cola' (a tiempo) o 'vencido' (no pudo tomarse a tiempo). Devuelve cuántos quedaron en cola."""
+    tolerancia = timedelta(minutes=TOLERANCIA_RETRASO_MIN)
+    ventana = ahora + timedelta(seconds=JITTER_MAX)
+    filas = (await db.execute(
+        select(MensajeProgramado, SesionWhatsApp)
+        .outerjoin(SesionWhatsApp, MensajeProgramado.id_sesion == SesionWhatsApp.id_sesion)
+        .where(
+            MensajeProgramado.estado_envio == "programado",
+            MensajeProgramado.fecha_hora_disparo <= ventana,
+        )
+        .order_by(MensajeProgramado.fecha_hora_disparo)
+    )).all()
+
+    en_cola = 0
+    for msg, sesion in filas:
+        disparo = _aware(msg.fecha_hora_disparo)
+        retraso = ahora - disparo
+
+        if retraso > tolerancia:
+            motivo = _motivo_vencido(sesion, retraso)
+            res = await db.execute(
+                update(MensajeProgramado)
+                .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "programado")
+                .values(estado_envio="vencido", error_envio=motivo, tomado_en=None)
+            )
+            if res.rowcount:
+                logger.warning("⌛ Mensaje %s vencido: %s", msg.id_mensaje, motivo)
+                if msg.recurrencia and msg.recurrencia != "none":
+                    siguiente = _proxima_ocurrencia_futura(disparo, msg.recurrencia, ahora)
+                    if siguiente:
+                        _clonar_siguiente(db, msg, siguiente)
+            continue
+
+        if sesion is None or sesion.estado_conexion != "conectado" or not sesion.token_autorizacion:
+            logger.warning(
+                "Mensaje %s espera: sesión %s (retraso %ds, tolerancia %d min)",
+                msg.id_mensaje, "eliminada" if sesion is None else f"'{sesion.estado_conexion}'",
+                max(int(retraso.total_seconds()), 0), TOLERANCIA_RETRASO_MIN,
+            )
+            continue
+
+        if disparo > ahora and (disparo - ahora).total_seconds() > random.uniform(JITTER_MIN, JITTER_MAX):
+            continue    # todavía no es su hora (jitter anti-avalancha)
+
+        res = await db.execute(
+            update(MensajeProgramado)
+            .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "programado")
+            .values(estado_envio="en_cola", tomado_en=ahora)
+        )
+        en_cola += res.rowcount or 0
+    await db.commit()
+    return en_cola
+
+
+async def _enviar_cola(db: AsyncSession) -> None:
+    """Fase 2 — ENVIAR: procesa todo lo que está 'en_cola' (incluido lo que quedó de un ciclo anterior).
+    Lo que entró a la cola a tiempo se envía SIEMPRE, aunque la cola tarde más que la tolerancia."""
+    mensajes = (await db.execute(
+        select(MensajeProgramado)
+        .where(MensajeProgramado.estado_envio == "en_cola", MensajeProgramado.id_sesion.is_not(None))
+        .order_by(MensajeProgramado.fecha_hora_disparo)
+    )).scalars().all()
+    if not mensajes:
+        return
+    logger.info("🗓  %d mensaje(s) en cola", len(mensajes))
+
+    for msg in mensajes:
+        sesion = await db.get(SesionWhatsApp, msg.id_sesion)
+        if not sesion or not sesion.token_autorizacion:
+            logger.error("Mensaje %s en cola sin sesión utilizable; se devuelve a programado", msg.id_mensaje)
+            await db.execute(update(MensajeProgramado).where(MensajeProgramado.id_mensaje == msg.id_mensaje)
+                             .values(estado_envio="programado", tomado_en=None))
+            await db.commit()
+            continue
+
+        res = await db.execute(
+            update(MensajeProgramado)
+            .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "en_cola")
+            .values(estado_envio="enviando")
+        )
+        await db.commit()
+        if not res.rowcount:
+            continue
+
+        try:
+            resultado = await _enviar_mensaje(
+                instancia=sesion.instancia_evolution,
+                destinatario=msg.id_grupo,
+                texto=msg.texto_mensaje,
+                tipo_media=msg.tipo_media,
+                url_media=msg.url_media,
+                token=sesion.token_autorizacion,
+            )
+            logger.info(
+                "✅ Enviado %s → %s (sesión %s) resultado: %s",
+                msg.id_mensaje, msg.id_grupo, sesion.instancia_evolution, str(resultado)[:120],
+            )
+            nuevo_estado, error_envio = "enviado", None
+        except Exception as exc:
+            logger.error("❌ Error enviando %s → %s: %s", msg.id_mensaje, msg.id_grupo, exc)
+            nuevo_estado, error_envio = "fallido", str(exc)[:1000]
+
+        await db.execute(
+            update(MensajeProgramado)
+            .where(MensajeProgramado.id_mensaje == msg.id_mensaje)
+            .values(estado_envio=nuevo_estado, error_envio=error_envio)
+        )
+
+        # Si se envió correctamente y tiene recurrencia, clonar el próximo
+        if nuevo_estado == "enviado" and msg.recurrencia != "none":
+            siguiente = _siguiente_disparo(msg.fecha_hora_disparo, msg.recurrencia)
+            if siguiente:
+                _clonar_siguiente(db, msg, siguiente)
+
+        await db.commit()
+
+
 async def _procesar_mensajes_pendientes() -> None:
     ahora = datetime.now(timezone.utc)
-    ventana = ahora + timedelta(seconds=JITTER_MAX)
-
     async with AsyncSessionFactory() as db:
-        stmt = (
-            select(MensajeProgramado)
-            .join(SesionWhatsApp, MensajeProgramado.id_sesion == SesionWhatsApp.id_sesion)
-            .where(
-                MensajeProgramado.id_sesion.is_not(None),  # sesión borrada → se ignora
-                MensajeProgramado.estado_envio == "programado",
-                MensajeProgramado.fecha_hora_disparo <= ventana,
-            )
-        )
-        result = await db.execute(stmt)
-        mensajes = result.scalars().all()
-
-        if not mensajes:
-            return
-
-        logger.info("🗓  %d mensaje(s) a procesar", len(mensajes))
-
-        for msg in mensajes:
-            sesion = await db.get(SesionWhatsApp, msg.id_sesion)
-            if not sesion:
-                logger.warning(
-                    "Sesión %s no encontrada para mensaje %s",
-                    msg.id_sesion, msg.id_mensaje
-                )
-                continue
-
-            if sesion.estado_conexion != "conectado":
-                logger.warning(
-                    "Sesión %s no está conectada (estado: '%s'), omitiendo mensaje %s.",
-                    sesion.instancia_evolution,
-                    sesion.estado_conexion,
-                    msg.id_mensaje,
-                )
-                continue
-
-            if not sesion.token_autorizacion:
-                logger.error(
-                    "Sesión %s no tiene token_autorizacion en BD.",
-                    sesion.instancia_evolution,
-                )
-                continue
-
-            jitter = random.uniform(JITTER_MIN, JITTER_MAX)
-            disparo = msg.fecha_hora_disparo
-            if disparo.tzinfo is None:
-                disparo = disparo.replace(tzinfo=timezone.utc)
-            if disparo > ahora:
-                restante = (disparo - ahora).total_seconds()
-                if restante > jitter:
-                    continue
-
-            await db.execute(
-                update(MensajeProgramado)
-                .where(
-                    MensajeProgramado.id_mensaje == msg.id_mensaje,
-                    MensajeProgramado.estado_envio == "programado",
-                )
-                .values(estado_envio="enviando")
-            )
-            await db.commit()
-
-            try:
-                resultado = await _enviar_mensaje(
-                    instancia=sesion.instancia_evolution,
-                    destinatario=msg.id_grupo,
-                    texto=msg.texto_mensaje,
-                    tipo_media=msg.tipo_media,
-                    url_media=msg.url_media,
-                    token=sesion.token_autorizacion,
-                )
-                logger.info(
-                    "✅ Enviado %s → %s (sesión %s) resultado: %s",
-                    msg.id_mensaje, msg.id_grupo, sesion.instancia_evolution,
-                    str(resultado)[:120],
-                )
-                nuevo_estado = "enviado"
-                error_envio = None
-            except Exception as exc:
-                logger.error(
-                    "❌ Error enviando %s → %s: %s",
-                    msg.id_mensaje, msg.id_grupo, exc,
-                )
-                nuevo_estado = "fallido"
-                error_envio = str(exc)[:1000]
-
-            await db.execute(
-                update(MensajeProgramado)
-                .where(MensajeProgramado.id_mensaje == msg.id_mensaje)
-                .values(estado_envio=nuevo_estado, error_envio=error_envio)
-            )
-
-            # Si se envió correctamente y tiene recurrencia, clonar el próximo
-            if nuevo_estado == "enviado" and msg.recurrencia != "none":
-                siguiente = _siguiente_disparo(msg.fecha_hora_disparo, msg.recurrencia)
-                if siguiente:
-                    proximo = MensajeProgramado(
-                        id_mensaje=uuid.uuid4(),
-                        id_sesion=msg.id_sesion,
-                        id_grupo=msg.id_grupo,
-                        texto_mensaje=msg.texto_mensaje,
-                        tipo_media=msg.tipo_media,
-                        url_media=msg.url_media,
-                        fecha_hora_disparo=siguiente,
-                        estado_envio="programado",
-                        recurrencia=msg.recurrencia,
-                        id_mensaje_origen=msg.id_mensaje,
-                    )
-                    db.add(proximo)
-                    logger.info(
-                        "🔁 Próxima ocurrencia programada: %s → %s (%s)",
-                        msg.id_mensaje, proximo.id_mensaje, siguiente.isoformat(),
-                    )
-
-            await db.commit()
+        await _tomar_mensajes(db, ahora)
+        await _enviar_cola(db)
 
 
 async def _limpiar_sesiones_huerfanas() -> None:

@@ -82,7 +82,8 @@ async def test_estado_vacio(datos):
     assert r.status_code == 200
     j = r.json()
     assert j["tiene_mensajes"] is False and j["sesiones"] == [] and j["proximos"] == []
-    assert j["tarjetas"] == {"pendientes": 0, "enviados_hoy": 0, "enviados_mes": 0, "fallidos_mes": 0}
+    assert j["tarjetas"] == {"pendientes": 0, "enviados_hoy": 0, "enviados_mes": 0, "fallidos_mes": 0, "vencidos": 0}
+    assert j["aviso_desconexion"] is None
     assert len(j["ultimos_7_dias"]) == 7 and all(d["enviados"] == 0 for d in j["ultimos_7_dias"])
     assert j["tasa_entrega"] is None and j["zona"] == "America/Guayaquil"
 

@@ -80,6 +80,7 @@ class SesionWhatsApp(Base):
     perfil_nombre: Mapped[str | None] = mapped_column(String(255))
     perfil_foto_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     perfil_consultado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    aviso_desconexion_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     instancia_evolution: Mapped[str] = mapped_column(
         String(100), unique=True, nullable=False
     )
@@ -141,7 +142,8 @@ class MensajeProgramado(Base):
         ForeignKey("mensajes_programados.id_mensaje", ondelete="SET NULL", name="fk_origen"),
         nullable=True,
     )
-    error_envio: Mapped[str | None] = mapped_column(Text)
+    error_envio: Mapped[str | None] = mapped_column(Text)   # motivo del fallo o del vencimiento
+    tomado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     fecha_creacion: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )

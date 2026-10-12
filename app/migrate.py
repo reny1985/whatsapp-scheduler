@@ -51,6 +51,8 @@ _STEPS = [
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_nombre VARCHAR(255)",
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_foto_en TIMESTAMPTZ",
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_consultado_en TIMESTAMPTZ",
+    # Aviso por correo de desconexión: se envía a lo sumo uno por desconexión (se limpia al reconectar)
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS aviso_desconexion_en TIMESTAMPTZ",
 
     # ── mensajes_programados ──────────────────────────────────────────────
     """
@@ -73,6 +75,9 @@ _STEPS = [
         REFERENCES mensajes_programados(id_mensaje) ON DELETE SET NULL
     """,
     "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS error_envio TEXT",
+    # Cuándo lo tomó el programador (para medir el retraso). Los estados nuevos 'en_cola' y 'vencido'
+    # no necesitan migración: estado_envio es VARCHAR sin restricción y los datos existentes no cambian.
+    "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS tomado_en TIMESTAMPTZ",
     # Borrar una sesión no debe borrar sus mensajes: FK CASCADE → SET NULL (sin tocar datos)
     "ALTER TABLE mensajes_programados ALTER COLUMN id_sesion DROP NOT NULL",
     "ALTER TABLE mensajes_programados DROP CONSTRAINT IF EXISTS mensajes_programados_id_sesion_fkey",

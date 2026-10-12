@@ -69,6 +69,8 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 if static_dir.exists():
     app.mount("/static/css", StaticFiles(directory=str(static_dir / "css")), name="css")
     app.mount("/static/js", StaticFiles(directory=str(static_dir / "js")), name="js")
+    if (static_dir / "vendor").exists():
+        app.mount("/static/vendor", StaticFiles(directory=str(static_dir / "vendor")), name="vendor")
 
 
 class _UploadsStaticFiles(StaticFiles):

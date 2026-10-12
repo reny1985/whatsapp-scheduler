@@ -26,7 +26,13 @@ async def programar_mensaje(
     if not res.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
-    mensaje = MensajeProgramado(**payload.model_dump(exclude={'forzar'}))
+    datos = payload.model_dump(exclude={'forzar'})
+    ahora = datetime.now(timezone.utc)
+    if payload.forzar and datos["fecha_hora_disparo"] <= ahora:
+        # "Enviar ahora": se programa para este instante; si conservara la hora pasada, el programador
+        # la vería fuera de la tolerancia de retraso y la marcaría "vencida" en vez de enviarla.
+        datos["fecha_hora_disparo"] = ahora
+    mensaje = MensajeProgramado(**datos)
     db.add(mensaje)
     await db.commit()
     await db.refresh(mensaje)
@@ -142,7 +148,7 @@ async def cancelar_mensaje(
     mensaje = res.scalar_one_or_none()
     if not mensaje:
         raise HTTPException(status_code=404, detail="Mensaje no encontrado")
-    if mensaje.estado_envio in ("enviado", "enviando"):
+    if mensaje.estado_envio in ("enviado", "enviando", "en_cola"):
         raise HTTPException(status_code=409,
                             detail=f"No se puede cancelar un mensaje en estado '{mensaje.estado_envio}'")
     mensaje.estado_envio = "cancelado"
@@ -186,9 +192,9 @@ async def eliminar_mensaje(
     mensaje = res.scalar_one_or_none()
     if not mensaje:
         raise HTTPException(status_code=404, detail="Mensaje no encontrado")
-    if mensaje.estado_envio == "enviando":
+    if mensaje.estado_envio in ("enviando", "en_cola"):
         raise HTTPException(status_code=409,
-                            detail="No se puede eliminar un mensaje en estado 'enviando'")
+                            detail=f"No se puede eliminar un mensaje en estado '{mensaje.estado_envio}'")
     await db.delete(mensaje)
     await db.commit()
 
