@@ -519,11 +519,32 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   border-color: var(--color-green);
 }
 
+/* Cabecera: el correo y el estado se acortan, el botón Salir nunca se sale de la pantalla */
+.user-badge { font-size: .78rem; color: var(--color-muted); margin-left: 12px; white-space: nowrap; }
+.btn-salir { margin-left: 8px; flex-shrink: 0; }
+.topbar h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Fila "campo + botones" (número personal, grupo, enlace/JID, agenda, edición) */
+.fila-campo { display: flex; gap: 8px; align-items: flex-start; }
+.fila-campo > .form-control { flex: 1 1 auto; min-width: 0; }
+.fila-campo > .btn { flex-shrink: 0; }
+
 /* Responsive */
 @media (max-width: 640px) {
   .sidebar { width: 56px; }
   .page { padding: 20px 16px; }
-  .topbar { padding: 0 16px; }
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar h1 { font-size: .95rem; flex: 0 1 auto; }
+  .topbar .spacer { flex: 1 1 0; min-width: 0; }
+  .topbar #conn-badge { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
+  /* el correo se reduce a un ícono (el correo completo queda en el atributo title) */
+  .user-badge { font-size: 0; margin-left: 0; flex-shrink: 0; }
+  .user-badge:not(:empty)::before { content: '👤'; font-size: 1.05rem; }
+  .btn-salir { margin-left: 0; }
+  /* campo a todo el ancho; los botones pasan a la línea de abajo, uno al lado del otro */
+  .fila-campo { flex-wrap: wrap; align-items: stretch; }
+  .fila-campo > .form-control { flex: 1 1 100%; width: 100%; }
+  .fila-campo > .btn { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; text-align: center; }
 }
 
 /* Grabación de audio/video */

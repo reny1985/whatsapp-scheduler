@@ -688,8 +688,32 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     return {"estado_evolution": estado_evo, "estado_bd": nuevo_estado, **extra}
 
 
-async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str | None) -> None:
-    """Refresca la caché de grupos_whatsapp en background (no bloquea la respuesta)."""
+# Candado por sesión: nunca corren dos sincronizaciones de grupos de la misma sesión a la vez.
+# Quien llega mientras otra está en curso espera a que termine y comparte su resultado.
+_sync_locks: dict[uuid.UUID, asyncio.Lock] = {}
+_sync_ultimo_ok: dict[uuid.UUID, bool] = {}
+
+
+async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str | None) -> bool:
+    """Sincroniza la caché de grupos con candado por sesión (ver _traer_y_guardar_grupos)."""
+    lock = _sync_locks.setdefault(id_sesion, asyncio.Lock())
+    if lock.locked():
+        logger.info("Sincronización de grupos de '%s' ya en curso: se espera su resultado", instancia)
+        async with lock:
+            pass
+        return _sync_ultimo_ok.get(id_sesion, True)
+    async with lock:
+        ok = await _traer_y_guardar_grupos(id_sesion, instancia, token)
+        _sync_ultimo_ok[id_sesion] = ok
+        return ok
+
+
+async def _traer_y_guardar_grupos(id_sesion: uuid.UUID, instancia: str, token: str | None) -> bool:
+    """Trae los grupos de Evolution y refresca la caché grupos_whatsapp.
+
+    Devuelve False si no se pudo consultar a Evolution (para que el endpoint lo avise); True si
+    la consulta funcionó, aunque no haya grupos.
+    """
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.get(
@@ -698,10 +722,10 @@ async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str 
             )
         if r.status_code != 200:
             logger.warning("Refresco grupos '%s' → HTTP %s", instancia, r.status_code)
-            return
+            return False
         raw = r.json() if r.text.strip() else []
         if not isinstance(raw, list) or not raw:
-            return
+            return True
         async with AsyncSessionLocal() as db:
             await db.execute(text("""
                 INSERT INTO grupos_whatsapp (id_grupo, id_sesion, subject, size, actualizado_en)
@@ -715,15 +739,32 @@ async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str 
             """), {"sid": str(id_sesion), "data": r.text})
             await db.commit()
         logger.info("Caché grupos actualizada para '%s': %d grupos", instancia, len(raw))
+        return True
     except Exception as exc:
         logger.warning("Error refrescando grupos en bg para '%s': %s", instancia, exc)
+        return False
+
+
+MSG_GRUPO_NO_EXISTE = "El grupo ya no existe o tu número ya no pertenece a él"
+MSG_ERROR_VERIFICAR_GRUPO = "No se pudo consultar WhatsApp. Intenta de nuevo en un momento."
+MSG_ERROR_SYNC_GRUPOS = (
+    "No se pudieron sincronizar los grupos desde WhatsApp. Revisa que la sesión esté conectada "
+    "e intenta de nuevo en unos minutos."
+)
 
 
 @router.get("/{id_sesion}/grupos")
-async def listar_grupos(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), _: Usuario = Depends(get_current_user)):
+async def listar_grupos(
+    id_sesion: uuid.UUID,
+    forzar: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
     """
     Devuelve grupos desde caché en BD (respuesta inmediata).
     Dispara un refresco en background para mantener la caché actualizada.
+    Con ?forzar=true espera a que Evolution sincronice (puede tardar ~1 min con muchos grupos)
+    y responde 502 con un mensaje claro si la sincronización falla.
     """
     sesion = await db.get(SesionWhatsApp, id_sesion)
     if not sesion:
@@ -741,10 +782,13 @@ async def listar_grupos(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db)
 
     grupos = await _leer_cache()
 
-    if not grupos:
-        # Caché vacía (sesión nueva o limpiada) → fetch sincrónico para no devolver lista vacía
-        logger.info("Caché vacía para '%s', fetch sincrónico", sesion.instancia_evolution)
-        await _refrescar_grupos_bg(id_sesion, sesion.instancia_evolution, sesion.token_autorizacion)
+    if not grupos or forzar:
+        # Caché vacía (sesión nueva o limpiada) o sincronización pedida → fetch sincrónico
+        logger.info("%s para '%s', fetch sincrónico",
+                    "Sincronización forzada" if grupos else "Caché vacía", sesion.instancia_evolution)
+        ok = await _refrescar_grupos_bg(id_sesion, sesion.instancia_evolution, sesion.token_autorizacion)
+        if ok is False:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=MSG_ERROR_SYNC_GRUPOS)
         grupos = await _leer_cache()
     else:
         # Caché con datos → devolver inmediatamente y refrescar en background
@@ -754,6 +798,55 @@ async def listar_grupos(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db)
 
     logger.info("Grupos para '%s': %d", sesion.instancia_evolution, len(grupos))
     return grupos
+
+
+@router.get("/{id_sesion}/verificar-grupo")
+async def verificar_grupo(
+    id_sesion: uuid.UUID,
+    jid: str,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    """Comprueba con Evolution (group/findGroupInfos) que el grupo existe y devuelve su nombre y
+    número de participantes. 404 de Evolution → el grupo ya no existe o la sesión ya no pertenece.
+    La clave de Evolution nunca llega al navegador."""
+    sesion = await db.get(SesionWhatsApp, id_sesion)
+    if not sesion:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    if not jid.endswith("@g.us"):
+        raise HTTPException(status_code=400, detail="El JID debe ser de un grupo (termina en @g.us)")
+    if sesion.estado_conexion != "conectado":
+        raise HTTPException(status_code=409, detail="La sesión no está conectada: no se puede verificar el grupo.")
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"{EVOLUTION_URL}/group/findGroupInfos/{sesion.instancia_evolution}",
+                params={"groupJid": jid},
+                headers=_evo_headers(sesion.token_autorizacion),
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("verificar-grupo: Evolution no respondió (%s)", type(exc).__name__)
+        raise HTTPException(status_code=502, detail=MSG_ERROR_VERIFICAR_GRUPO)
+
+    if r.status_code == 404:
+        return {"estado": "no_existe", "nombre": "", "participantes": 0, "mensaje": MSG_GRUPO_NO_EXISTE}
+    if r.status_code != 200:
+        logger.warning("verificar-grupo: Evolution respondió %s: %s", r.status_code, r.text[:200])
+        raise HTTPException(status_code=502, detail=MSG_ERROR_VERIFICAR_GRUPO)
+    try:
+        info = r.json()
+    except ValueError:
+        info = None
+    if not isinstance(info, dict):
+        raise HTTPException(status_code=502, detail=MSG_ERROR_VERIFICAR_GRUPO)
+
+    nombre = info.get("subject") or ""
+    participantes = info.get("size")
+    if participantes is None:
+        participantes = len(info.get("participants") or [])
+    return {"estado": "ok", "nombre": nombre, "participantes": participantes,
+            "mensaje": f"{nombre} · {participantes} participantes"}
 
 
 @router.get("/{id_sesion}/resolver-enlace")

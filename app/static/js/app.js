@@ -164,6 +164,7 @@ function actualizarUISegunRol() {
   const badge = document.getElementById('user-badge');
   if (badge && currentUser) {
     badge.textContent = currentUser.email + (currentUser.rol === 'viewer' ? ' (viewer)' : '');
+    badge.title = currentUser.email;   // en pantallas angostas solo se ve un ícono
   }
   // viewer: ocultar el botón de programar en la nav
   const btnProgramar = document.querySelector('[data-page="programar"]');
@@ -981,6 +982,8 @@ function seleccionarGrupo(id, nombre) {
   document.getElementById('sel-grupo').value = id;
   document.getElementById('inp-grupo-buscar').value = nombre;
   cerrarListaGrupos();
+  _limpiarVerificacionGrupo('main');
+  verificarGrupo('main');   // al elegir un grupo se comprueba solo; el botón permite repetirlo
 }
 
 function _poblarComboGrupos(grupos, estado) {
@@ -1010,12 +1013,40 @@ function _poblarComboGrupos(grupos, estado) {
   inp.value = '';
 }
 
-async function loadGrupos() {
+let _cargandoGrupos = false;
+
+function _estadoGrupos(msg, tipo) {
+  const el = document.getElementById('grupos-estado');
+  if (!el) return;
+  if (!msg) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = '';
+  el.style.color = tipo === 'error' ? 'var(--color-danger)' : tipo === 'ok' ? 'var(--color-green)' : 'var(--color-muted)';
+  el.textContent = msg;
+}
+
+// forzar=true (botón Recargar): espera a que Evolution sincronice los grupos y avisa si falla.
+// Sin forzar (al abrir Programar): usa la caché; si está vacía el servidor sincroniza solo, una vez.
+async function loadGrupos(forzar = false) {
+  if (_cargandoGrupos) return;          // evita sincronizaciones duplicadas por doble clic
+  _cargandoGrupos = true;
+  const btn = document.getElementById('btn-recargar-grupos');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Sincronizando…'; }
+  _estadoGrupos('⏳ Sincronizando grupos desde WhatsApp… con muchos grupos puede tardar hasta un minuto.', 'info');
+  try {
+    await _loadGruposInterno(forzar);
+  } finally {
+    _cargandoGrupos = false;
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Recargar'; }
+  }
+}
+
+async function _loadGruposInterno(forzar) {
   const sel = document.getElementById('sel-grupo');
   if (!sel) return;
   await cargarSesionActiva();
   if (!sesionActiva) {
     sel.innerHTML = '<option value="">— Sin sesión activa —</option>';
+    _estadoGrupos('No hay una sesión de WhatsApp activa. Vincula un número en la pestaña Sesión.', 'error');
     return;
   }
 
@@ -1040,13 +1071,71 @@ async function loadGrupos() {
   const hidSesion = document.getElementById('hid-sesion');
   if (hidSesion) hidSesion.value = idSesionUsar;
 
-  _poblarComboGrupos([], 'cargando');
+  const previos = gruposCache;
+  const jidElegido = document.getElementById('sel-grupo')?.value || '';
+  const textoElegido = document.getElementById('inp-grupo-buscar')?.value || '';
+  if (!forzar) _poblarComboGrupos([], 'cargando');
   try {
-    const grupos = await apiFetch(`/sesiones/${idSesionUsar}/grupos`);
+    const grupos = await apiFetch(`/sesiones/${idSesionUsar}/grupos${forzar ? '?forzar=true' : ''}`);
     _poblarComboGrupos(grupos, 'ok');
+    if (forzar && jidElegido && grupos.some(g => g.id === jidElegido)) {
+      // Recargar no debe perder el grupo que ya había elegido
+      document.getElementById('sel-grupo').value = jidElegido;
+      document.getElementById('inp-grupo-buscar').value = textoElegido;
+    }
+    _estadoGrupos(grupos.length
+      ? `✅ ${grupos.length} grupos${forzar ? ' sincronizados desde WhatsApp' : ''}`
+      : 'No se encontraron grupos en esta sesión. Pulsa Recargar para intentar de nuevo.',
+      grupos.length ? 'ok' : 'info');
   } catch (e) {
-    _poblarComboGrupos([], 'error');
+    if (forzar && previos.length) {
+      gruposCache = previos;            // se conserva la lista anterior si la sincronización falla
+      _poblarComboGrupos(previos, 'ok');
+      if (jidElegido) {
+        document.getElementById('sel-grupo').value = jidElegido;
+        document.getElementById('inp-grupo-buscar').value = textoElegido;
+      }
+    } else {
+      _poblarComboGrupos([], 'error');
+    }
+    _estadoGrupos('❌ ' + e.message, 'error');
     showAlert('alert-programar', e.message, 'error');
+  }
+}
+
+// ---- Verificar grupo (existe y cuántos participantes tiene) ----
+
+function _limpiarVerificacionGrupo(ctx) {
+  const el = document.getElementById(ctx === 'edit' ? 'edit-grupo-verificado' : 'grupo-verificado');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+}
+
+async function verificarGrupo(ctx = 'main') {
+  const edit = ctx === 'edit';
+  const jid = document.getElementById(edit ? 'edit-grupo-jid' : 'sel-grupo')?.value;
+  const idSesion = edit ? document.getElementById('edit-grupo-sesion')?.value
+                        : (document.getElementById('hid-sesion')?.value || sesionActiva?.id_sesion);
+  const out = document.getElementById(edit ? 'edit-grupo-verificado' : 'grupo-verificado');
+  if (!out) return;
+  const pintar = (fondo, color, texto) => {
+    out.style.display = '';
+    out.style.background = fondo;
+    out.style.color = color;
+    out.textContent = texto;
+  };
+  if (!jid) { pintar('rgba(83,189,235,.12)', 'var(--color-info)', 'Elige un grupo primero.'); return; }
+  if (!idSesion) { pintar('rgba(241,92,109,.12)', 'var(--color-danger)', 'No hay sesión activa para verificar.'); return; }
+
+  pintar('rgba(134,150,160,.12)', 'var(--color-muted)', '⏳ Verificando grupo…');
+  try {
+    const d = await apiFetch(`/sesiones/${idSesion}/verificar-grupo?jid=${encodeURIComponent(jid)}`);
+    if (d.estado === 'ok') {
+      pintar('rgba(37,211,102,.12)', 'var(--color-green)', `✅ ${d.nombre || 'Grupo'} · ${d.participantes} participantes`);
+    } else {
+      pintar('rgba(241,92,109,.12)', 'var(--color-danger)', `❌ ${d.mensaje}`);
+    }
+  } catch (e) {
+    pintar('rgba(241,92,109,.12)', 'var(--color-danger)', `❌ ${e.message}`);
   }
 }
 
@@ -1757,6 +1846,15 @@ function abrirModalEditar(id) {
   if (!m) return;
   document.getElementById('edit-id').value = m.id_mensaje;
   document.getElementById('edit-texto').value = m.texto_mensaje || '';
+  const esGrupo = (m.id_grupo || '').endsWith('@g.us') && !!m.id_sesion;
+  document.getElementById('edit-grp-destino').style.display = esGrupo ? '' : 'none';
+  if (esGrupo) {
+    document.getElementById('edit-grupo-jid').value = m.id_grupo;
+    document.getElementById('edit-grupo-sesion').value = m.id_sesion;
+    document.getElementById('edit-grupo-nombre').value =
+      (gruposCache.find(g => g.id === m.id_grupo)?.subject) || m.id_grupo;
+    _limpiarVerificacionGrupo('edit');
+  }
   document.getElementById('edit-url-media').value = m.url_media || '';
   document.getElementById('edit-tipo-media').value = m.tipo_media || '';
 
