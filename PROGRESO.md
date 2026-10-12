@@ -1,28 +1,38 @@
-# PROGRESO — rama `fix-audio-video`
+# PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-11 (v1.0.2)
+Última actualización: 2026-10-11 (estado tras v1.0.2)
 
-## Qué se hizo hoy
-- **Staging creado** en Railway: `https://thorough-adventure-staging.up.railway.app` (entorno `staging`, servicio `thorough-adventure` vinculado). Production (`https://enviafast.net`) no se tocó.
-- **Reglas en CLAUDE.md** (en `main`): entornos staging/production, deploy solo a staging, `aprobado para producción`, respaldo `pg_dump` + merge + etiqueta antes de producción, ramas desde la última etiqueta estable, adjuntos en `/data` (`UPLOAD_DIR=/data/uploads`), nunca borrar datos de production.
-- **Conversión de audio y video al subir** (`app/routers/media.py`):
-  - Audio → OGG Opus (`libopus`, 32k, mono, 48 kHz, `voip`).
-  - Video (webm, mp4, mov, 3gp) → MP4 H.264 main + AAC, máx. 1280 px de ancho, dimensiones pares, `+faststart`.
-  - Si ffmpeg falla: error 422 claro y no se guarda el original.
-- **Envío** (`app/scheduler.py`): audio por `sendWhatsAppAudio` (texto como mensaje aparte), video con `fileName` `.mp4`, respuesta de Evolution registrada hasta 500 caracteres.
-- **`error_envio`**: columna nueva `mensajes_programados.error_envio TEXT` (`ADD COLUMN IF NOT EXISTS`); si Evolution falla, el mensaje queda `fallido` con el motivo.
-- **Pruebas**: 40 pasan (`tests/test_media.py` nuevo, verificación con ffprobe).
-- Desplegado a staging (deploy `75bf46c7`), `/health` ok.
-- **Corrección de pérdida de sesiones** (commit `3ccf9b3`): limpieza solo de sesiones nunca conectadas, `connecting` → `desconectado` si hay número, FK de mensajes a `SET NULL`. 59 pruebas. Reconexión probada en staging (deploy `595a4dd2`).
+## Estado actual
 
-## Pruebas en staging (2026-10-11)
-Aprobadas: audio grabado, video grabado, video de galería, imágenes y documentos (pdf, docx, xlsx con nombre y extensión correctos).
+**Production (`https://enviafast.net`) corre v1.0.2**, sobre `main`.
 
-## Release v1.0.1 (2026-10-11)
-Aprobado para producción (incluye la corrección de sesiones). Pasos: respaldo `pg_dump` → merge a `main` → etiqueta `v1.0.1` → push → deploy a production → verificación de `/health` y de la columna `error_envio`.
+- **v1.0.2** — forma:
+  - Selector de países (intl-tel-input) con el tema oscuro de la app, legible en celular y escritorio.
+  - Cámara nativa del celular en el formulario de mensaje: "Tomar foto" y "Grabar video" (cámara trasera por defecto), con el mismo flujo de subida y conversión.
+  - Grabación de video en la página renombrada "Webcam" (solo computador), con botón para alternar cámara trasera/frontal.
+  - CLAUDE.md corregido: Evolution API es la 1.8.6.
+- **v1.0.1** — audio, video y documentos:
+  - Audio convertido a OGG Opus y enviado con `sendWhatsAppAudio`; video convertido a MP4 H.264 + AAC.
+  - Documentos llegan con su nombre original, extensión y `mimetype` correctos (ya no como "BIN"); se aceptan también `.xls`, `.pptx` y `.csv`.
+  - `error_envio`: si Evolution falla, el mensaje queda `fallido` con el motivo.
+  - Corrección de la pérdida de sesiones y mensajes: la limpieza automática solo borra sesiones nunca conectadas; `connecting` en una sesión con número queda `desconectado`; la FK de mensajes pasó a `ON DELETE SET NULL`, así que borrar una sesión ya no borra sus mensajes.
+- 59 pruebas automáticas pasan.
 
-## Pendientes futuros
-- Verificar el dominio en Resend y configurar `RESEND_FROM`.
-- Mostrar un error al usuario cuando el correo de verificación no se envía.
-- Separar los datos por cliente.
-- Ondas en notas de voz requieren Evolution v2 (PR #2346); no actualizar sin probar antes en un servidor aparte.
+## Números vinculados
+- **Production** tiene vinculado el **593961409996**.
+- **Staging** usa otro número.
+- **Regla: no usar el mismo número en staging y production a la vez.**
+
+## Entornos
+- Production: `https://enviafast.net`. Staging: `https://thorough-adventure-staging.up.railway.app`.
+- Todo despliegue va a staging; a production solo con "aprobado para producción", tras respaldo `pg_dump` fuera del proyecto, merge a `main`, etiqueta y push (ver CLAUDE.md).
+- Respaldos de production en `~/Desktop/Respaldos_Enviafast/` (se usa `pg_dump` 18 de Homebrew).
+
+## Pendientes futuros (en orden de prioridad)
+1. Verificar `enviafast.net` en Resend y configurar `RESEND_FROM` en ambos entornos.
+2. Botón "Eliminar" sesión: si Evolution no confirma el borrado de la instancia, avisar al usuario en vez de borrar solo en la BD. Revisar si la instancia `wa-b71909aa` sigue viva en Evolution.
+3. Mensajes sin sesión (`id_sesion` nulo): mostrarlos como "sin sesión" y permitir reasignarlos a otra sesión.
+4. Separar los datos por cliente (multiusuario), imprescindible antes de vender.
+5. Seguridad de Evolution: verificar la clave global y poner HTTPS.
+6. Ondas en notas de voz: requieren Evolution v2 (PR #2346); probar antes en un servidor aparte.
+7. Agregar los botones de cámara nativa al formulario de edición de mensajes.
