@@ -19,7 +19,7 @@ from app.auth import get_current_user, require_admin
 from app.database import get_db, AsyncSessionLocal
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario, condicion_sesion_nunca_conectada
 from app.schemas import SesionWhatsAppCreate, SesionWhatsAppRead, PILOTO_ID_USUARIO
-from app.services import aviso_desconexion, perfil
+from app.services import aviso_desconexion, perfil, reasignar
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -706,9 +706,12 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     extra = {}
     if nuevo_estado == "conectado":
         extra["aviso_desconexion_en"] = None    # reconectó: el próximo corte podrá avisar de nuevo
+        extra["desconectada_en"] = None
         numero = await _obtener_numero_instancia(sesion.instancia_evolution)
         if numero:
             extra["numero_telefono"] = numero
+    elif estado_previo == "conectado":
+        extra["desconectada_en"] = datetime.now(timezone.utc)   # desde cuándo está desconectada
 
     stmt = update(SesionWhatsApp).where(
         SesionWhatsApp.id_sesion == id_sesion
@@ -727,8 +730,9 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     if nuevo_estado == "conectado":
         # como máximo una vez al día; nunca falla ni demora más de unos segundos
         await perfil.actualizar_perfil_si_corresponde(id_sesion)
+        await reasignar.reasignar_huerfanos(id_sesion)
     elif nuevo_estado == "desconectado" and estado_previo == "conectado":
-        asyncio.create_task(aviso_desconexion.avisar_desconexion(id_sesion))
+        asyncio.create_task(aviso_desconexion.avisar_desconexion(id_sesion, espera=aviso_desconexion.GRACIA_SEG))
 
     return {"estado_evolution": estado_evo, "estado_bd": nuevo_estado, **extra}
 

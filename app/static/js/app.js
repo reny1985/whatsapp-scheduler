@@ -440,6 +440,7 @@ async function loadDashboard() {
     const d = await apiFetch('/dashboard/resumen');
     _pintarSaludoInicio(d.perfil);
     _pintarAvisoDesconexion(d.aviso_desconexion);
+    _pintarAvisoSinSesion(d.aviso_sin_sesion);
     _pintarSesionInicio(d.sesiones);
     _pintarTarjetasInicio(d.tarjetas);
     _pintarProximosInicio(d);
@@ -490,6 +491,18 @@ function _pintarTarjetasInicio(t) {
   document.getElementById('inicio-tarjetas').classList.toggle('con-vencidos', t.vencidos > 0);
 }
 
+function _pintarAvisoSinSesion(aviso) {
+  const el = document.getElementById('inicio-aviso-sin-sesion');
+  if (!el) return;
+  if (!aviso || !aviso.programados) { el.innerHTML = ''; return; }
+  const n = aviso.programados;
+  el.innerHTML = `
+    <div class="aviso-desconexion aviso-info" role="status">
+      <span class="aviso-txt">📌 <strong>${n} ${n === 1 ? 'mensaje programado no tiene' : 'mensajes programados no tienen'} sesión de WhatsApp</strong> (se eliminó su número). Si vuelves a vincular el mismo número se reasignan solos.</span>
+      <button type="button" class="btn btn-sm btn-primary" onclick="irAMensajes('sin_sesion')">Ver mensajes</button>
+    </div>`;
+}
+
 function _pintarAvisoDesconexion(aviso) {
   const el = document.getElementById('inicio-aviso');
   if (!el) return;
@@ -521,7 +534,7 @@ function _pintarProximosInicio(d) {
       <span class="envio-ico" title="${m.tipo_media || 'texto'}">${_ICONO_TIPO[m.tipo_media] || '💬'}</span>
       <div class="envio-info">
         <div class="envio-destino">${esc(m.destino)}</div>
-        <div class="envio-fecha">${fmtDate(m.fecha_hora_disparo)}${m.recurrente ? ' · 🔁' : ''}</div>
+        <div class="envio-fecha">${fmtDate(m.fecha_hora_disparo)}${m.recurrente ? ' · 🔁' : ''}${m.sin_sesion ? '<span class="sin-sesion-txt">· sin sesión</span>' : ''}</div>
       </div>
       <span class="punto ${m.estado === 'enviando' ? 'punto-azul' : 'punto-naranja'}" title="${m.estado === 'enviando' ? 'Enviando' : 'Pendiente'}"></span>
     </div>`).join('');
@@ -1885,7 +1898,9 @@ async function loadMensajes() {
 
   try {
     const params = new URLSearchParams({ limit: MSG_POR_PAG, offset: (msgPagina - 1) * MSG_POR_PAG });
-    if (msgFiltro !== 'todos') params.set('estado', msgFiltro);
+    if (msgFiltro === 'sin_sesion') params.set('sin_sesion', 'true');
+    else if (msgFiltro !== 'todos') params.set('estado', msgFiltro);
+    _pintarBannerSinSesion();
     const lista = await apiFetch('/mensajes/?' + params);
     if (!lista.length) {
       el.innerHTML = '';
@@ -1911,12 +1926,15 @@ async function loadMensajes() {
         </td>
         <td data-label="Programado para">${fmtDate(m.fecha_hora_disparo)}</td>
         <td data-label="Estado">
-          <span class="badge ${estadoClass}">${estadoTxt}</span>
+          <span class="badge ${estadoClass}">${estadoTxt}</span>${!m.id_sesion && ['programado', 'vencido'].includes(m.estado_envio) ? '<span class="badge badge-sin-sesion" title="Su número se eliminó. Si vuelves a vincular el mismo número se reasigna solo.">sin sesión</span>' : ''}
           ${m.estado_envio === 'vencido' && m.error_envio ? `<span class="motivo-vencido">${esc(m.error_envio)}</span>` : ''}
           ${m.recurrencia && m.recurrencia !== 'none' ? `<span class="badge badge-info" style="font-size:.7rem;margin-left:4px" title="Recurrencia: ${m.recurrencia}">🔁 ${m.recurrencia === 'daily' ? 'Diario' : m.recurrencia === 'weekly' ? 'Semanal' : 'Mensual'}</span>` : ''}
         </td>
         <td class="col-acciones" style="white-space:nowrap">
           ${currentUser?.rol === 'admin' ? `
+            ${m.estado_envio === 'programado' && !m.id_sesion ? `
+              <button class="btn btn-sm btn-primary" onclick="reasignarMensaje('${m.id_mensaje}')" style="margin-right:4px">Reasignar</button>
+            ` : ''}
             ${m.estado_envio === 'programado' ? `
               <button class="btn btn-sm btn-secondary" onclick="abrirModalEditar('${m.id_mensaje}')" style="margin-right:4px">Editar</button>
               <button class="btn btn-sm btn-danger" onclick="cancelarMensaje('${m.id_mensaje}')" style="margin-right:4px">Cancelar</button>
@@ -1943,6 +1961,44 @@ function filtrarMensajes(estado) {
   const btn = document.querySelector(`[data-filter="${estado}"]`);
   if (btn) btn.classList.add('active');
   loadMensajes();
+}
+
+// ---- Mensajes sin sesión: aviso, reasignar uno o todos ----
+async function _pintarBannerSinSesion() {
+  const el = document.getElementById('mensajes-huerfanos');
+  if (!el) return;
+  try {
+    const c = await apiFetch('/mensajes/sin-sesion/conteo');
+    if (!c.programados) { el.innerHTML = ''; return; }
+    await cargarSesionActiva();
+    const n = c.programados;
+    const destino = sesionActiva
+      ? `<button type="button" class="btn btn-sm btn-primary" onclick="reasignarTodosSinSesion()">Reasignar ${n === 1 ? 'el mensaje' : 'todos'} a ${_nombreSesion(sesionActiva)}</button>`
+      : `<button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>`;
+    el.innerHTML = `
+      <div class="aviso-desconexion aviso-info" role="status">
+        <span class="aviso-txt">📌 Tienes <strong>${n} ${n === 1 ? 'mensaje programado' : 'mensajes programados'} sin sesión de WhatsApp</strong> (se eliminó su número). Si vuelves a vincular el mismo número se reasignan solos; si no, pasan a vencidos cuando llegue su hora.</span>
+        ${destino}
+      </div>`;
+  } catch { el.innerHTML = ''; }
+}
+
+async function reasignarMensaje(id) {
+  await cargarSesionActiva();
+  if (!sesionActiva) { alert('Primero vincula un número en Sesión.'); return; }
+  try {
+    await apiFetch(`/mensajes/${id}/reasignar`, { method: 'PATCH', body: JSON.stringify({ id_sesion: sesionActiva.id_sesion }) });
+    loadMensajes();
+  } catch (e) { alert('No se pudo reasignar: ' + e.message); }
+}
+
+async function reasignarTodosSinSesion() {
+  if (!sesionActiva) return;
+  try {
+    const r = await apiFetch('/mensajes/reasignar-sin-sesion', { method: 'POST', body: JSON.stringify({ id_sesion: sesionActiva.id_sesion }) });
+    alert(`${r.reasignados} mensaje(s) reasignado(s) a ${_nombreSesion(sesionActiva)}.`);
+    loadMensajes();
+  } catch (e) { alert('No se pudo reasignar: ' + e.message); }
 }
 
 // "Reprogramar" un mensaje vencido: abre Programar con sus datos cargados (el usuario elige la nueva hora)
@@ -2235,7 +2291,13 @@ async function eliminarPlantilla(id) {
 document.addEventListener('DOMContentLoaded', async () => {
   // Botones de navegación
   $$('[data-page]').forEach(btn => {
-    btn.addEventListener('click', () => navigate(btn.dataset.page));
+    btn.addEventListener('click', () => {
+      if (btn.dataset.page === 'mensajes') {      // desde el menú, Mensajes empieza sin filtro (las tarjetas del Inicio sí filtran)
+        msgFiltro = 'todos'; msgPagina = 1;
+        $$('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'todos'));
+      }
+      navigate(btn.dataset.page);
+    });
   });
 
   // Form de programar

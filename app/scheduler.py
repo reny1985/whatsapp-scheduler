@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import AsyncSessionLocal as AsyncSessionFactory
 from app.models import MensajeProgramado, SesionWhatsApp, condicion_sesion_nunca_conectada
 from app.routers.media import DOC_EXT_MIME
+from app.services import vigilancia
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -178,6 +179,12 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _sesion_utilizable(msg, sesion) -> bool:
+    """La sesión existe, es del MISMO usuario que el mensaje, está conectada y tiene credenciales."""
+    return bool(sesion and sesion.id_usuario == msg.id_usuario
+                and sesion.estado_conexion == "conectado" and sesion.token_autorizacion)
+
+
 def _motivo_vencido(sesion, retraso: timedelta) -> str:
     """Por qué no pudo tomarse a tiempo (mensaje para el usuario)."""
     minutos = int(retraso.total_seconds() // 60)
@@ -206,6 +213,8 @@ def _clonar_siguiente(db: AsyncSession, msg: MensajeProgramado, siguiente: datet
     proximo = MensajeProgramado(
         id_mensaje=uuid.uuid4(),
         id_sesion=msg.id_sesion,
+        id_usuario=msg.id_usuario,
+        numero_origen=msg.numero_origen,
         id_grupo=msg.id_grupo,
         texto_mensaje=msg.texto_mensaje,
         tipo_media=msg.tipo_media,
@@ -257,7 +266,7 @@ async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
                         _clonar_siguiente(db, msg, siguiente)
             continue
 
-        if sesion is None or sesion.estado_conexion != "conectado" or not sesion.token_autorizacion:
+        if not _sesion_utilizable(msg, sesion):
             logger.warning(
                 "Mensaje %s espera: sesión %s (retraso %ds, tolerancia %d min)",
                 msg.id_mensaje, "eliminada" if sesion is None else f"'{sesion.estado_conexion}'",
@@ -394,6 +403,15 @@ def crear_scheduler() -> AsyncIOScheduler:
         trigger="interval",
         seconds=60,
         id="enviar_mensajes",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        vigilancia.vigilar_conexiones,
+        trigger="interval",
+        seconds=60,
+        id="vigilar_conexiones",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

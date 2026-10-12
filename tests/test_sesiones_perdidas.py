@@ -117,7 +117,7 @@ async def test_borrar_sesion_deja_sus_mensajes(Session):
     mid = uuid.uuid4()
     async with Session() as db:
         db.add(MensajeProgramado(
-            id_mensaje=mid, id_sesion=sid, id_grupo="120363@g.us", texto_mensaje="hola",
+            id_usuario=USUARIO, id_mensaje=mid, id_sesion=sid, id_grupo="120363@g.us", texto_mensaje="hola",
             fecha_hora_disparo=datetime.now(timezone.utc) + timedelta(days=1)))
         await db.commit()
     async with Session() as db:  # igual que DELETE /sesiones/{id}
@@ -132,7 +132,7 @@ async def test_scheduler_ignora_mensajes_sin_sesion(Session):
     mid = uuid.uuid4()
     async with Session() as db:
         db.add(MensajeProgramado(
-            id_mensaje=mid, id_sesion=None, id_grupo="120363@g.us", texto_mensaje="huérfano",
+            id_usuario=USUARIO, id_mensaje=mid, id_sesion=None, id_grupo="120363@g.us", texto_mensaje="huérfano",
             fecha_hora_disparo=datetime.now(timezone.utc) - timedelta(minutes=1)))   # dentro de la tolerancia
         await db.commit()
     with patch.object(scheduler, "_enviar_mensaje", new=AsyncMock()) as enviar:

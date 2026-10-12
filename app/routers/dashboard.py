@@ -2,9 +2,9 @@
 routers/dashboard.py
 Resumen de la pantalla de Inicio en una sola respuesta.
 
-Cuatro consultas agregadas (no una por mensaje), todas filtradas por el usuario actual a través de
-sesiones_whatsapp.id_usuario, y con "hoy" / "este mes" calculados en America/Guayaquil dentro de
-Postgres. Los mensajes sin sesión (id_sesion nulo) no pertenecen a ningún usuario y no se cuentan.
+Cuatro consultas agregadas (no una por mensaje), todas filtradas por mensajes_programados.id_usuario (el dueño
+del mensaje, que no depende de la sesión), y con "hoy" / "este mes" calculados en America/Guayaquil dentro de
+Postgres. Los mensajes sin sesión (su número se eliminó) SÍ se cuentan y se señalan aparte.
 """
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
@@ -36,6 +36,8 @@ _SQL_TARJETAS = text("""
         count(m.id_mensaje) FILTER (WHERE m.estado_envio IN ('programado', 'en_cola', 'enviando')
                                       AND m.estado_sesion <> 'conectado')                AS pendientes_desconectado,
         count(m.id_mensaje) FILTER (WHERE m.estado_envio = 'vencido')                    AS vencidos,
+        count(m.id_mensaje) FILTER (WHERE m.estado_envio = 'programado'
+                                      AND m.id_sesion IS NULL)                           AS sin_sesion,
         count(m.id_mensaje) FILTER (WHERE m.estado_envio = 'enviado'
                                       AND m.fecha_hora_disparo >= t.hoy_ini
                                       AND m.fecha_hora_disparo <  t.hoy_fin)             AS enviados_hoy,
@@ -50,8 +52,8 @@ _SQL_TARJETAS = text("""
     LEFT JOIN (
         SELECT m.*, s.estado_conexion AS estado_sesion
         FROM mensajes_programados m
-        JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
-        WHERE s.id_usuario = :uid
+        LEFT JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
+        WHERE m.id_usuario = :uid
     ) m ON TRUE
     GROUP BY t.ahora
 """)
@@ -62,8 +64,7 @@ _SQL_SIETE_DIAS = text("""
     msgs AS (
         SELECT (m.fecha_hora_disparo AT TIME ZONE CAST(:tz AS text))::date AS fecha, m.estado_envio
         FROM mensajes_programados m
-        JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
-        WHERE s.id_usuario = :uid
+        WHERE m.id_usuario = :uid
           AND m.estado_envio IN ('enviado', 'fallido')
           AND m.fecha_hora_disparo >= (((SELECT hoy FROM h) - 6)::timestamp AT TIME ZONE CAST(:tz AS text))
     )
@@ -79,11 +80,16 @@ _SQL_SIETE_DIAS = text("""
 
 _SQL_PROXIMOS = text("""
     SELECT m.id_mensaje, m.id_grupo, m.tipo_media, m.texto_mensaje, m.fecha_hora_disparo,
-           m.estado_envio, m.recurrencia, g.subject AS grupo_nombre
+           m.estado_envio, m.recurrencia, m.id_sesion IS NULL AS sin_sesion, g.subject AS grupo_nombre
     FROM mensajes_programados m
-    JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
-    LEFT JOIN grupos_whatsapp g ON g.id_grupo = m.id_grupo AND g.id_sesion = m.id_sesion
-    WHERE s.id_usuario = :uid
+    LEFT JOIN LATERAL (
+        SELECT gg.subject
+        FROM grupos_whatsapp gg
+        JOIN sesiones_whatsapp ss ON ss.id_sesion = gg.id_sesion
+        WHERE ss.id_usuario = m.id_usuario AND gg.id_grupo = m.id_grupo
+        LIMIT 1
+    ) g ON TRUE
+    WHERE m.id_usuario = :uid
       AND m.estado_envio IN ('programado', 'en_cola', 'enviando')
     ORDER BY m.fecha_hora_disparo ASC
     LIMIT :limite
@@ -151,7 +157,10 @@ async def resumen(
             "enviados_mes": t["enviados_mes"],
             "fallidos_mes": t["fallidos_mes"],
             "vencidos": t["vencidos"],
+            "sin_sesion": t["sin_sesion"],
         },
+        # Mensajes programados cuyo número se eliminó: esperan; al re-vincular el mismo número se reasignan solos
+        "aviso_sin_sesion": {"programados": t["sin_sesion"]} if t["sin_sesion"] > 0 else None,
         # Aviso del Inicio: hay mensajes esperando y su WhatsApp está desconectado
         "aviso_desconexion": (
             {"pendientes": t["pendientes_desconectado"]} if t["pendientes_desconectado"] > 0 else None
@@ -164,6 +173,7 @@ async def resumen(
                 "fecha_hora_disparo": m["fecha_hora_disparo"].isoformat(),
                 "estado": m["estado_envio"],
                 "recurrente": bool(m["recurrencia"] and m["recurrencia"] != "none"),
+                "sin_sesion": m["sin_sesion"],
             }
             for m in proximos
         ],

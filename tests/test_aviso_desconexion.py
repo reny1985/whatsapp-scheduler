@@ -16,7 +16,7 @@ from app.database import get_db
 from app.main import app
 from app.models import MensajeProgramado, SesionWhatsApp
 from app.routers import sesiones, webhook
-from app.services import aviso_desconexion, correo
+from app.services import aviso_desconexion, correo, reasignar
 from tests.test_sesiones_perdidas import Session  # noqa: F401  (fixture: BD temporal con migraciones)
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -29,6 +29,8 @@ def mundo(Session, monkeypatch):
     enviar = AsyncMock(return_value="id-correo")
     monkeypatch.setattr(correo, "enviar", enviar)
     monkeypatch.setattr(aviso_desconexion, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(aviso_desconexion, "GRACIA_SEG", 0)               # sin espera en las pruebas
+    monkeypatch.setattr(reasignar, "AsyncSessionLocal", Session)
     monkeypatch.setattr(webhook, "AsyncSessionLocal", Session)
     monkeypatch.setattr(webhook, "_fetch_instancia_info", AsyncMock(return_value={"apikey": "k", "numero": "593961409996"}))
     monkeypatch.setattr(webhook.perfil, "actualizar_perfil_si_corresponde", AsyncMock(return_value=True))
@@ -45,7 +47,7 @@ async def _preparar(maker, pendientes=2, estado="conectado", verificado=True, em
                               token_autorizacion="t", estado_conexion=estado, numero_telefono="593961409996"))
         await db.flush()
         for h in range(pendientes):
-            db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="120363@g.us", texto_mensaje="x",
+            db.add(MensajeProgramado(id_usuario=U1, id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="120363@g.us", texto_mensaje="x",
                                      fecha_hora_disparo=datetime.now(timezone.utc) + timedelta(hours=2 + h)))
         await db.commit()
         instancia = (await db.get(SesionWhatsApp, sid)).instancia_evolution
@@ -97,7 +99,7 @@ async def test_mensajes_ya_enviados_o_vencidos_no_cuentan_como_pendientes(mundo)
     sid, inst = await _preparar(maker, pendientes=0)
     async with maker() as db:
         for e in ("enviado", "vencido", "fallido", "cancelado"):
-            db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
+            db.add(MensajeProgramado(id_usuario=U1, id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
                                      fecha_hora_disparo=datetime.now(timezone.utc), estado_envio=e))
         await db.commit()
     assert await aviso_desconexion.avisar_desconexion(sid) is False
@@ -222,7 +224,7 @@ async def test_inicio_cuenta_los_vencidos_y_las_en_cola_como_pendientes(mundo):
     sid, _i = await _preparar(maker, pendientes=1)
     async with maker() as db:
         for e in ("vencido", "vencido", "en_cola"):
-            db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
+            db.add(MensajeProgramado(id_usuario=U1, id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
                                      fecha_hora_disparo=datetime.now(timezone.utc) - timedelta(hours=1), estado_envio=e))
         await db.commit()
     t = (await _resumen(maker))["tarjetas"]
@@ -233,7 +235,7 @@ async def test_conteo_de_pendientes_antes_de_eliminar_un_numero(mundo):
     maker, _ = mundo
     sid, _i = await _preparar(maker, pendientes=3)
     async with maker() as db:                                     # los ya enviados no cuentan
-        db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
+        db.add(MensajeProgramado(id_usuario=U1, id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
                                  fecha_hora_disparo=datetime.now(timezone.utc), estado_envio="enviado"))
         await db.commit()
     app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1)

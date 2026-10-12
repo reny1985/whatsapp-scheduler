@@ -42,7 +42,7 @@ async def _sesion(maker, estado="conectado", token="tok"):
 async def _msg(maker, sid, disparo, estado="programado", rec="none", destino="120363@g.us"):
     mid = uuid.uuid4()
     async with maker() as db:
-        db.add(MensajeProgramado(id_mensaje=mid, id_sesion=sid, id_grupo=destino, texto_mensaje="hola",
+        db.add(MensajeProgramado(id_usuario=U1, id_mensaje=mid, id_sesion=sid, id_grupo=destino, texto_mensaje="hola",
                                  fecha_hora_disparo=disparo, estado_envio=estado, recurrencia=rec))
         await db.commit()
     return mid

@@ -808,3 +808,9 @@ input.flatpickr-input.form-control[readonly] { cursor: pointer; }
   #mensajes-table-body td.col-acciones .btn { margin-right: 0 !important; }
   .motivo-vencido { max-width: none; }
 }
+
+/* Mensajes sin sesión */
+.aviso-info { background: rgba(83,189,235,.10); border-color: rgba(83,189,235,.45); border-left-color: var(--color-info); }
+#mensajes-huerfanos .aviso-desconexion { margin-bottom: 14px; }
+.badge-sin-sesion { color: var(--color-warning); background: rgba(255,191,0,.12); margin-left: 4px; }
+.sin-sesion-txt { font-size: .72rem; color: var(--color-warning); margin-left: 6px; white-space: nowrap; }

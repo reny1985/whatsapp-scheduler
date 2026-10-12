@@ -192,6 +192,7 @@
 
         <div id="inicio-error"></div>
         <div id="inicio-aviso"></div>
+        <div id="inicio-aviso-sin-sesion"></div>
 
         <div class="card inicio-estado" id="inicio-sesion"><div class="spinner"></div></div>
 
@@ -441,10 +442,13 @@
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="enviado" style="font-size:.78rem">Enviados</button>
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="fallido" style="font-size:.78rem">Fallidos</button>
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="vencido" style="font-size:.78rem">Vencidos</button>
+        <button class="btn btn-sm btn-secondary filter-btn" data-filter="sin_sesion" style="font-size:.78rem">Sin sesión</button>
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="cancelado" style="font-size:.78rem">Cancelados</button>
         <div class="spacer" style="flex:1"></div>
         <button class="btn btn-sm btn-secondary" onclick="loadMensajes()">🔄 Actualizar</button>
       </div>
+
+      <div id="mensajes-huerfanos"></div>
 
       <div class="card" style="padding:0">
         <div class="table-wrap">

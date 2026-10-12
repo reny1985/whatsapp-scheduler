@@ -62,7 +62,8 @@ async def _sesion(maker, usuario, numero, estado="conectado"):
 
 async def _msg(maker, sid, cuando, estado="enviado", destino="120363@g.us", tipo=None, rec="none"):
     async with maker() as db:
-        db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo=destino, texto_mensaje="x",
+        duenio = (await db.get(SesionWhatsApp, sid)).id_usuario if sid else U1
+        db.add(MensajeProgramado(id_usuario=duenio, id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo=destino, texto_mensaje="x",
                                  tipo_media=tipo, fecha_hora_disparo=cuando, estado_envio=estado, recurrencia=rec))
         await db.commit()
 
@@ -82,7 +83,7 @@ async def test_estado_vacio(datos):
     assert r.status_code == 200
     j = r.json()
     assert j["tiene_mensajes"] is False and j["sesiones"] == [] and j["proximos"] == []
-    assert j["tarjetas"] == {"pendientes": 0, "enviados_hoy": 0, "enviados_mes": 0, "fallidos_mes": 0, "vencidos": 0}
+    assert j["tarjetas"] == {"pendientes": 0, "enviados_hoy": 0, "enviados_mes": 0, "fallidos_mes": 0, "vencidos": 0, "sin_sesion": 0}
     assert j["aviso_desconexion"] is None
     assert len(j["ultimos_7_dias"]) == 7 and all(d["enviados"] == 0 for d in j["ultimos_7_dias"])
     assert j["tasa_entrega"] is None and j["zona"] == "America/Guayaquil"
@@ -132,16 +133,16 @@ async def test_filtra_siempre_por_usuario(datos):
     assert sum(d["enviados"] for d in j1["ultimos_7_dias"]) == 1
 
 
-async def test_mensajes_sin_sesion_no_se_cuentan(datos):
+async def test_mensajes_sin_sesion_si_se_cuentan_porque_el_dueño_es_el_usuario(datos):
     sid = await _sesion(datos, U1, "593961409996")
     ahora = _ec_ahora()
     await _msg(datos, sid, _hoy_seguro())
-    async with datos() as db:     # mensaje huérfano (su sesión fue borrada)
-        db.add(MensajeProgramado(id_mensaje=uuid.uuid4(), id_sesion=None, id_grupo="1@g.us", texto_mensaje="x",
+    async with datos() as db:     # mensaje huérfano (su sesión fue borrada): sigue siendo del usuario
+        db.add(MensajeProgramado(id_usuario=U1, id_mensaje=uuid.uuid4(), id_sesion=None, id_grupo="1@g.us", texto_mensaje="x",
                                  fecha_hora_disparo=_hoy_seguro(), estado_envio="enviado"))
         await db.commit()
     j = (await _resumen(datos)).json()
-    assert j["tarjetas"]["enviados_hoy"] == 1
+    assert j["tarjetas"]["enviados_hoy"] == 2
 
 
 async def test_proximos_5_ordenados_con_nombre_de_grupo_y_numero(datos):

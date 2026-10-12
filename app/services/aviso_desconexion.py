@@ -5,6 +5,7 @@ pendientes. UN solo correo por desconexión: se marca aviso_desconexion_en y no 
 hasta que la sesión se reconecte (al reconectar se limpia). Si el correo falla, no rompe nada: queda en
 el log y se libera la marca para poder reintentar en el siguiente evento.
 """
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,7 @@ LOGO_URL = os.getenv("EMAIL_LOGO_URL", "")
 VERDE = "#25D366"
 EC = timezone(timedelta(hours=-5))      # Ecuador no tiene horario de verano
 PENDIENTES = ("programado", "en_cola")
+GRACIA_SEG = 60     # espera antes de avisar tras un evento de desconexión: si se reconecta, no se avisa
 
 
 def _hora_ecuador(dt: datetime) -> str:
@@ -62,13 +64,21 @@ def construir_correo(numero: str, pendientes: int, proximo: datetime | None) -> 
     return asunto, html, texto
 
 
-async def avisar_desconexion(id_sesion) -> bool:
-    """Envía el aviso si corresponde. Nunca lanza. Devuelve True si se envió."""
+async def avisar_desconexion(id_sesion, espera: float = 0) -> bool:
+    """Envía el aviso si corresponde. Nunca lanza. Devuelve True si se envió.
+
+    `espera` (segundos): se espera y luego se vuelve a comprobar el estado, así un microcorte que se
+    recupera solo no genera correo, y si la sesión se elimina a propósito en ese lapso tampoco."""
     reclamado = False
     try:
+        if espera:
+            await asyncio.sleep(espera)
         async with AsyncSessionLocal() as db:
             sesion = await db.get(SesionWhatsApp, id_sesion)
-            if not sesion or sesion.estado_conexion == "conectado" or sesion.aviso_desconexion_en is not None:
+            if not sesion:
+                logger.info("Aviso de desconexión: la sesión ya no existe (se eliminó), no se envía")
+                return False
+            if sesion.estado_conexion == "conectado" or sesion.aviso_desconexion_en is not None:
                 return False
             usuario = await db.get(Usuario, sesion.id_usuario)
             if not usuario or not usuario.email_verificado or "@" not in usuario.email or usuario.email.endswith("@localhost"):
@@ -79,6 +89,7 @@ async def avisar_desconexion(id_sesion) -> bool:
                 .where(MensajeProgramado.id_sesion == id_sesion, MensajeProgramado.estado_envio.in_(PENDIENTES))
             )).one()
             if not n:
+                logger.info("Aviso de desconexión: '%s' no tiene mensajes pendientes, no se envía", sesion.instancia_evolution)
                 return False
 
             # Reclama el aviso (un solo correo por desconexión, aunque lleguen varios eventos a la vez)
