@@ -5,7 +5,6 @@ Login, logout, perfil, setup inicial y verificación de correo.
 import logging
 import os
 import random
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -29,8 +28,14 @@ logger = logging.getLogger("whatsapp_scheduler")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-RESEND_FROM    = os.getenv("RESEND_FROM", "WhatsApp Scheduler <onboarding@resend.dev>")
-APP_NAME       = os.getenv("APP_NAME", "WhatsApp Scheduler")
+RESEND_FROM    = os.getenv("RESEND_FROM", "Enviafast <no-reply@enviafast.net>")
+APP_NAME       = "Enviafast"   # nombre visible en asunto y cuerpo del correo
+RESEND_TIMEOUT = httpx.Timeout(10.0)
+MSG_ERROR_CORREO = "No pudimos enviar el correo, intenta de nuevo en unos minutos"
+
+
+class EnvioCorreoError(Exception):
+    """Resend rechazó el correo, no respondió o no está configurado."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -39,10 +44,14 @@ def _generar_codigo() -> str:
     return str(random.randint(100000, 999999))
 
 
-async def _enviar_email(to: str, codigo: str) -> None:
+async def _enviar_email(to: str, codigo: str) -> str | None:
+    """Envía el código por Resend y ESPERA la respuesta. Devuelve el id del correo.
+
+    Lanza EnvioCorreoError si falla (el motivo queda en el log, nunca la clave).
+    """
     if not RESEND_API_KEY:
-        logger.warning("RESEND_API_KEY no configurada — código %s para %s (no enviado)", codigo, to)
-        return
+        logger.error("Correo a %s no enviado: RESEND_API_KEY no configurada", to)
+        raise EnvioCorreoError("RESEND_API_KEY no configurada")
 
     asunto = f"[{APP_NAME}] Tu código de verificación: {codigo}"
     cuerpo = f"""
@@ -59,16 +68,29 @@ async def _enviar_email(to: str, codigo: str) -> None:
     </div>
     """
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=RESEND_TIMEOUT) as client:
             r = await client.post(
                 "https://api.resend.com/emails",
                 headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
                 json={"from": RESEND_FROM, "to": [to], "subject": asunto, "html": cuerpo},
             )
-            r.raise_for_status()
-        logger.info("Código de verificación enviado a %s via Resend", to)
-    except Exception as exc:
-        logger.error("Error enviando email a %s: %s", to, exc)
+    except httpx.TimeoutException:
+        logger.error("Resend no respondió a tiempo al enviar correo a %s (timeout %ss)", to, RESEND_TIMEOUT.read)
+        raise EnvioCorreoError("timeout")
+    except httpx.HTTPError as exc:
+        logger.error("Error de red con Resend al enviar correo a %s: %s", to, type(exc).__name__)
+        raise EnvioCorreoError("red")
+
+    if r.status_code >= 400:
+        logger.error("Resend rechazó el correo a %s: HTTP %s %s", to, r.status_code, r.text[:300])
+        raise EnvioCorreoError(f"HTTP {r.status_code}")
+
+    try:
+        id_correo = r.json().get("id")
+    except ValueError:
+        id_correo = None
+    logger.info("Código de verificación enviado a %s via Resend (id=%s)", to, id_correo)
+    return id_correo
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -178,10 +200,15 @@ async def setup(payload: SetupRequest, db: AsyncSession = Depends(get_db)):
         )
         db.add(user)
 
-    await db.commit()
+    # Se envía ANTES de guardar: si Resend falla, se revierte y el registro se puede reintentar
+    # (después de guardar, /auth/setup respondería 409 "ya configurado").
+    try:
+        await _enviar_email(payload.email, codigo)
+    except EnvioCorreoError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=MSG_ERROR_CORREO)
 
-    # Enviar email en background (no bloquea la respuesta)
-    asyncio.create_task(_enviar_email(payload.email, codigo))
+    await db.commit()
 
     return {"ok": True, "email": payload.email, "verificacion_requerida": True}
 
@@ -217,9 +244,15 @@ async def reenviar_codigo(
     codigo = _generar_codigo()
     user.codigo_verificacion = codigo
     user.codigo_expira_en    = datetime.now(timezone.utc) + timedelta(minutes=30)
-    await db.commit()
 
-    asyncio.create_task(_enviar_email(email, codigo))
+    # Si Resend falla se revierte: el código anterior sigue siendo válido
+    try:
+        await _enviar_email(email, codigo)
+    except EnvioCorreoError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=MSG_ERROR_CORREO)
+
+    await db.commit()
     return {"ok": True}
 
 
