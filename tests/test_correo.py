@@ -129,7 +129,7 @@ def cliente():
 async def test_setup_ok_envia_antes_de_guardar(cliente, resend):
     db = _FakeDB(_piloto())
     async with await cliente(db) as c:
-        r = await c.post("/auth/setup", json={"email": "nuevo@x.com", "password": "12345678"})
+        r = await c.post("/auth/setup", json={"email": "nuevo@x.com", "password": "12345678", "confirmar_password": "12345678"})
     assert r.status_code == 201 and r.json()["verificacion_requerida"] is True
     assert len(resend.llamadas) == 1
     db.commit.assert_awaited_once()
@@ -139,7 +139,7 @@ async def test_setup_resend_falla_devuelve_error_claro_y_revierte(cliente, resen
     resend.modo = "error"
     db = _FakeDB(_piloto())
     async with await cliente(db) as c:
-        r = await c.post("/auth/setup", json={"email": "nuevo@x.com", "password": "12345678"})
+        r = await c.post("/auth/setup", json={"email": "nuevo@x.com", "password": "12345678", "confirmar_password": "12345678"})
     assert r.status_code == 502
     assert r.json()["detail"] == "No pudimos enviar el correo, intenta de nuevo en unos minutos"
     db.rollback.assert_awaited_once()
@@ -151,7 +151,7 @@ async def test_setup_timeout_devuelve_error_claro(cliente, resend):
     resend.modo = "timeout"
     db = _FakeDB(_piloto())
     async with await cliente(db) as c:
-        r = await c.post("/auth/setup", json={"email": "nuevo@x.com", "password": "12345678"})
+        r = await c.post("/auth/setup", json={"email": "nuevo@x.com", "password": "12345678", "confirmar_password": "12345678"})
     assert r.status_code == 502 and "No pudimos enviar el correo" in r.json()["detail"]
     db.commit.assert_not_awaited()
 

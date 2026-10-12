@@ -35,6 +35,7 @@ function mostrarSetup() {
   document.getElementById('auth-setup-panel').style.display = '';
   document.getElementById('auth-verify-panel').style.display = 'none';
   document.getElementById('alert-setup').innerHTML = '';
+  document.getElementById('setup-pw-error').style.display = 'none';
 }
 
 let _verifyEmail = '';
@@ -94,19 +95,49 @@ async function loginUser() {
   }
 }
 
+// Muestra u oculta la contraseña del campo vecino. Cada botón es independiente.
+function togglePassword(btn) {
+  const input = btn.parentElement.querySelector('input');
+  if (!input) return;
+  const mostrar = input.type === 'password';
+  input.type = mostrar ? 'text' : 'password';
+  btn.setAttribute('aria-label', mostrar ? 'Ocultar contraseña' : 'Mostrar contraseña');
+  btn.setAttribute('aria-pressed', mostrar ? 'true' : 'false');
+  btn.querySelector('.ico-oculto').style.display = mostrar ? 'none' : '';
+  btn.querySelector('.ico-visible').style.display = mostrar ? '' : 'none';
+}
+
+// "Las contraseñas no coinciden" debajo de Repetir contraseña; devuelve true si coinciden
+function _validarCoincidenciaPassword(mostrarSiVacio = false) {
+  const p1 = document.getElementById('setup-password').value;
+  const p2 = document.getElementById('setup-password2').value;
+  const err = document.getElementById('setup-pw-error');
+  const distintas = p1 !== p2 && (mostrarSiVacio || p2 !== '');
+  err.style.display = distintas ? '' : 'none';
+  return p1 === p2;
+}
+
 async function setupUser() {
   const email = document.getElementById('setup-email').value.trim();
   const password = document.getElementById('setup-password').value;
-  if (!email || !password) {
+  const confirmar = document.getElementById('setup-password2').value;
+  if (!email || !password || !confirmar) {
     showAlert('alert-setup', 'Completa todos los campos', 'error');
+    _validarCoincidenciaPassword(false);
     return;
   }
+  if (password.length < 8) {
+    showAlert('alert-setup', 'La contraseña debe tener al menos 8 caracteres', 'error');
+    return;
+  }
+  if (!_validarCoincidenciaPassword(true)) return;   // no coinciden: no se envía el formulario
+  document.getElementById('alert-setup').innerHTML = '';
   const btn = document.getElementById('btn-setup');
   btn.disabled = true; btn.textContent = 'Creando...';
   try {
     await apiFetch('/auth/setup', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, confirmar_password: confirmar }),
     });
     mostrarVerify(email);
   } catch (e) {
@@ -2112,8 +2143,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   ['login-email','login-password'].forEach(id => {
     document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') loginUser(); });
   });
-  ['setup-email','setup-password'].forEach(id => {
+  ['setup-email','setup-password','setup-password2'].forEach(id => {
     document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') setupUser(); });
+  });
+  ['setup-password','setup-password2'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', () => _validarCoincidenciaPassword(false));
   });
   document.getElementById('verify-codigo')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') verificarCodigo();
