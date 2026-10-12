@@ -1,10 +1,18 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-11 (estado tras v1.0.5)
+Última actualización: 2026-10-12 (estado tras v1.0.6)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.5**, sobre `main`.
+**Production (`https://enviafast.net`) corre v1.0.6**, sobre `main`.
+
+- **v1.0.6** — Inicio amigable, menú y perfil:
+  - Menú lateral con texto (ícono + palabra en computador; palabra de 11 px bajo el ícono en móvil), sección activa resaltada y "Salir" siempre visible abajo.
+  - Inicio nuevo alimentado por un solo endpoint, `GET /dashboard/resumen` (4 consultas agregadas, filtrado por usuario, "hoy" y "este mes" en America/Guayaquil): saludo con fecha y hora de Ecuador, botón "Programar mensaje", estado de WhatsApp, 4 tarjetas (Pendientes, Enviados hoy, Enviados este mes, Fallidos del mes) que filtran Mensajes, próximos 5 envíos con nombre de grupo, barras de 7 días y tasa de entrega, y estados vacíos.
+  - El indicador de conexión de la cabecera muestra el estado real apenas se entra a la app (antes decía "Sin sesión" hasta ~30 s).
+  - Nombre y foto de perfil de WhatsApp (Evolution `chat/fetchProfile`): se consultan al conectarse y al pulsar "Verificar", como máximo una vez al día; la foto se descarga y guarda en `<UPLOAD_DIR>/avatars/<id_sesion>.jpg` y se sirve con login por `GET /sesiones/{id}/foto`. Se muestra en el saludo del Inicio, la cabecera y la pantalla Sesión (con iniciales o ícono como respaldo).
+  - `avatars/` está bloqueada en `/static/uploads` (404): las fotos solo salen por el endpoint con login.
+  - Migración: columnas nuevas `perfil_nombre`, `perfil_foto_en` y `perfil_consultado_en` en `sesiones_whatsapp`.
 
 - **v1.0.5** — contraseñas:
   - Crear cuenta tiene el campo "Repetir contraseña": si no coinciden muestra "Las contraseñas no coinciden" debajo y no envía el formulario; también se valida en el backend (`/auth/setup` responde 422 con `confirmar_password` distinta). Mínimo de 8 caracteres con su mensaje.
@@ -31,7 +39,7 @@
   - Documentos llegan con su nombre original, extensión y `mimetype` correctos (ya no como "BIN"); se aceptan también `.xls`, `.pptx` y `.csv`.
   - `error_envio`: si Evolution falla, el mensaje queda `fallido` con el motivo.
   - Corrección de la pérdida de sesiones y mensajes: la limpieza automática solo borra sesiones nunca conectadas; `connecting` en una sesión con número queda `desconectado`; la FK de mensajes pasó a `ON DELETE SET NULL`, así que borrar una sesión ya no borra sus mensajes.
-- 93 pruebas automáticas pasan.
+- 128 pruebas automáticas pasan.
 
 ## Números vinculados
 - **Production** (`enviafast.net`) usa el **0969829845** (593969829845).
@@ -52,3 +60,5 @@
 6. Ondas en notas de voz: requieren Evolution v2 (PR #2346); probar antes en un servidor aparte.
 7. Agregar los botones de cámara nativa al formulario de edición de mensajes.
 8. Error de consola "Unexpected token 'export'": viene de `utils.js` de intl-tel-input, que se carga como script clásico (es un módulo). Investigar si afecta la validación/formato de números.
+9. **Seguridad:** los adjuntos en `/static/uploads` son públicos con nombre aleatorio. Antes de vender, usar enlaces firmados que caduquen.
+10. Mensajes sin sesión (`id_sesion` nulo) no se cuentan en el Inicio (no se sabe de qué usuario son); relacionado con el pendiente 3.

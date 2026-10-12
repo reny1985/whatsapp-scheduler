@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +19,7 @@ from app.auth import get_current_user, require_admin
 from app.database import get_db, AsyncSessionLocal
 from app.models import SesionWhatsApp, Usuario, condicion_sesion_nunca_conectada
 from app.schemas import SesionWhatsAppCreate, SesionWhatsAppRead, PILOTO_ID_USUARIO
+from app.services import perfil
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -632,6 +634,23 @@ async def obtener_qr_por_id(id_sesion: uuid.UUID, db: AsyncSession = Depends(get
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@router.get("/{id_sesion}/foto")
+async def foto_perfil(
+    id_sesion: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    """Foto de perfil guardada en el servidor. Requiere login y que la sesión sea del usuario."""
+    sesion = await db.get(SesionWhatsApp, id_sesion)
+    if not sesion or sesion.id_usuario != usuario.id_usuario:
+        raise HTTPException(status_code=404, detail="Sin foto")
+    ruta = perfil.ruta_foto(id_sesion)
+    if not ruta.is_file():
+        raise HTTPException(status_code=404, detail="Sin foto")
+    tipo = perfil.tipo_imagen(ruta.read_bytes()[:16]) or "image/jpeg"
+    return FileResponse(ruta, media_type=tipo, headers={"Cache-Control": "private, max-age=86400"})
+
+
 @router.get("/{id_sesion}/verificar")
 async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), _: Usuario = Depends(require_admin)):
     """
@@ -684,6 +703,10 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     )
     await db.execute(stmt)
     await db.commit()
+
+    if nuevo_estado == "conectado":
+        # como máximo una vez al día; nunca falla ni demora más de unos segundos
+        await perfil.actualizar_perfil_si_corresponde(id_sesion)
 
     return {"estado_evolution": estado_evo, "estado_bd": nuevo_estado, **extra}
 

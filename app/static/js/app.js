@@ -6,6 +6,23 @@
 const API = window.location.origin;  // mismo origen que el backend
 
 // Nombre visible de una sesión: número de teléfono > nombre_sesion > instancia
+const _ICONO_USUARIO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+
+function _iniciales(nombre) {
+  const p = String(nombre || '').trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return '';
+  return (p[0][0] + (p.length > 1 ? p[1][0] : '')).toUpperCase().replace(/[<>&"]/g, '');
+}
+
+// Círculo de perfil: foto si existe (se pide con login a /sesiones/{id}/foto); si no hay o falla,
+// iniciales del nombre o ícono de usuario. tam: '' | 'sm' | 'lg'
+function _avatarHTML(idSesion, fotoV, nombre, tam = '') {
+  const ini = _iniciales(nombre);
+  const img = (idSesion && fotoV)
+    ? `<img src="/sesiones/${idSesion}/foto?v=${encodeURIComponent(fotoV)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+  return `<span class="avatar${tam ? ' avatar-' + tam : ''}">${ini || _ICONO_USUARIO}${img}</span>`;
+}
+
 function _nombreSesion(s) {
   if (s.numero_telefono) return '+' + s.numero_telefono;
   if (s.nombre_sesion)   return s.nombre_sesion;
@@ -21,6 +38,53 @@ let currentUser = null;  // { id, email, rol }
 function mostrarAuthScreen(show = true) {
   document.getElementById('auth-screen').style.display = show ? 'flex' : 'none';
   document.getElementById('app-shell').style.display  = show ? 'none' : '';
+  if (show) detenerBadgeConexion(); else iniciarBadgeConexion();
+}
+
+// ---- Indicador de conexión + foto de perfil en la cabecera ----
+// Antes se consultaba al cargar la página (aún sin login → 401 → "Sin sesión") y no se refrescaba
+// hasta 30 s después. Ahora arranca al entrar a la app y distingue "sin sesión" de "no autorizado".
+let _badgeTimer = null;
+
+function _estadoBadge(lista) {
+  const s = lista.find(x => x.estado_conexion === 'conectado') || lista[0];
+  if (!s) return { cls: 'badge-muted', txt: 'Sin sesión', sesion: null };
+  const map = { conectado: ['badge-green', 'Conectado'], qr_pendiente: ['badge-orange', 'QR Pendiente'], desconectado: ['badge-red', 'Desconectado'] };
+  const [cls, txt] = map[s.estado_conexion] || ['badge-muted', s.estado_conexion];
+  return { cls, txt, sesion: s };
+}
+
+async function actualizarBadgeConexion() {
+  const badge = document.getElementById('conn-badge');
+  if (!badge) return;
+  try {
+    const lista = await apiFetch('/sesiones/');
+    const { cls, txt, sesion } = _estadoBadge(lista);
+    badge.className = 'badge ' + cls;
+    badge.textContent = txt;
+    const av = document.getElementById('perfil-avatar');
+    if (av) {
+      av.innerHTML = _avatarHTML(sesion?.id_sesion, sesion?.perfil_foto_en, sesion?.perfil_nombre, 'sm');
+      av.title = currentUser?.email || '';
+    }
+  } catch (e) {
+    if (e.status === 401) return;    // sin login: no se muestra un estado engañoso
+    badge.className = 'badge badge-muted';
+    badge.textContent = 'Sin conexión';
+  }
+}
+
+function iniciarBadgeConexion() {
+  actualizarBadgeConexion();
+  clearInterval(_badgeTimer);
+  _badgeTimer = setInterval(actualizarBadgeConexion, 30000);
+}
+
+function detenerBadgeConexion() {
+  clearInterval(_badgeTimer);
+  _badgeTimer = null;
+  const badge = document.getElementById('conn-badge');
+  if (badge) { badge.className = 'badge badge-muted'; badge.textContent = 'Cargando...'; }
 }
 
 function mostrarLogin() {
@@ -261,7 +325,7 @@ function navigate(pageId) {
   if (btn) btn.classList.add('active');
   currentPage = pageId;
   // Actualizar título del topbar
-  const titles = { dashboard: 'Dashboard', programar: 'Programar Mensaje', mensajes: 'Mensajes Programados', sesion: 'Sesión WhatsApp' };
+  const titles = { dashboard: 'Inicio', programar: 'Programar Mensaje', mensajes: 'Mensajes Programados', sesion: 'Sesión WhatsApp' };
   const titleEl = document.getElementById('topbar-title');
   if (titleEl) titleEl.textContent = titles[pageId] || pageId;
   // Cargar datos según la página
@@ -295,181 +359,135 @@ async function cargarSesionActiva() {
 // PAGE: DASHBOARD
 // ============================================================
 
-let _histDias = 7;
+const _ICONO_TIPO = { image: '🖼️', audio: '🎵', video: '🎬', document: '📄' };   // sin adjunto = texto 💬
+let _relojInicio = null;
 
-async function loadDashboard() {
-  await cargarSesionActiva();
-  renderEstadoSesion();
-  // load all sections in parallel
-  await Promise.all([
-    loadStatsResumen(),
-    loadHistorial(_histDias),
-    loadProximos(),
-    loadRecientes(),
-  ]);
+function _fechaHoraEcuador() {
+  const ahora = new Date();
+  const fecha = new Intl.DateTimeFormat('es-EC', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Guayaquil',
+  }).format(ahora);
+  const hora = new Intl.DateTimeFormat('es-EC', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Guayaquil',
+  }).format(ahora);
+  return `${fecha} · ${hora}`;
 }
 
-function renderEstadoSesion() {
-  const el = document.getElementById('dash-sesion');
-  if (!el) return;
-  const badgeClass = e => e === 'conectado' ? 'badge-green' : e === 'qr_pendiente' ? 'badge-orange' : 'badge-red';
-  const labels = { conectado: 'Conectado', qr_pendiente: 'Esperando QR', desconectado: 'Desconectado' };
+function _pintarFechaInicio() {
+  const el = document.getElementById('inicio-fecha');
+  if (el) el.textContent = _fechaHoraEcuador();
+}
 
-  if (!todasLasSesiones.length) {
+// Lleva a Mensajes con el filtro de estado indicado (programado | enviado | fallido)
+function irAMensajes(estado) {
+  msgFiltro = estado;
+  msgPagina = 1;
+  $$('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === estado));
+  navigate('mensajes');
+}
+
+async function loadDashboard() {
+  _pintarFechaInicio();
+  clearInterval(_relojInicio);
+  _relojInicio = setInterval(() => { if (currentPage === 'dashboard') _pintarFechaInicio(); }, 30000);
+
+  const err = document.getElementById('inicio-error');
+  if (err) err.innerHTML = '';
+  try {
+    const d = await apiFetch('/dashboard/resumen');
+    _pintarSaludoInicio(d.perfil);
+    _pintarSesionInicio(d.sesiones);
+    _pintarTarjetasInicio(d.tarjetas);
+    _pintarProximosInicio(d);
+    _pintarBarrasInicio(d.ultimos_7_dias, d.tasa_entrega);
+  } catch (e) {
+    if (err) err.innerHTML = `<div class="alert alert-error">No se pudo cargar el resumen: ${e.message}</div>`;
+  }
+}
+
+function _pintarSaludoInicio(perfil) {
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const nombre = perfil && perfil.nombre ? perfil.nombre : '';
+  document.getElementById('inicio-hola').innerHTML = nombre ? `Hola, ${esc(nombre)} 👋` : 'Hola 👋';
+  document.getElementById('inicio-avatar').innerHTML =
+    _avatarHTML(perfil && perfil.id_sesion, perfil && perfil.foto_v, nombre, 'lg');
+}
+
+function _pintarSesionInicio(sesiones) {
+  const el = document.getElementById('inicio-sesion');
+  if (!el) return;
+  if (!sesiones.length) {
     el.innerHTML = `
-      <div class="card-title">Sesión WhatsApp</div>
-      <div class="alert alert-info" style="margin:0">Sin sesión.
-        <button class="btn btn-sm btn-primary" style="margin-left:12px" onclick="navigate('sesion')">Conectar</button>
+      <div class="card-title">WhatsApp</div>
+      <div class="estado-fila">
+        <span class="estado-texto"><span class="punto punto-rojo"></span>Sin número vinculado</span>
+        <button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>
       </div>`;
     return;
   }
-  el.innerHTML = `<div class="card-title">Sesiones WhatsApp</div>` +
-    todasLasSesiones.map(s => `
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--color-border)">
-        <div class="text-mono" style="flex:1;min-width:120px;font-size:.82rem">${_nombreSesion(s)}</div>
-        <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
-        ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-secondary" onclick="navigate('sesion')">QR</button>` : ''}
-      </div>`).join('');
+  el.innerHTML = `<div class="card-title">WhatsApp</div>` + sesiones.map(s => `
+    <div class="estado-fila">
+      <span class="estado-numero">${s.numero ? '+' + s.numero : 'Número sin vincular'}</span>
+      <span class="estado-texto"><span class="punto ${s.conectado ? 'punto-verde' : 'punto-rojo'}"></span>${s.conectado ? 'Conectado' : 'Desconectado'}</span>
+      ${s.conectado ? '' : `<button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>`}
+    </div>`).join('');
 }
 
-async function loadStatsResumen() {
-  const el = document.getElementById('dash-stats');
+function _pintarTarjetasInicio(t) {
+  document.getElementById('num-pendientes').textContent = t.pendientes;
+  document.getElementById('num-hoy').textContent = t.enviados_hoy;
+  document.getElementById('num-mes').textContent = t.enviados_mes;
+  const f = document.getElementById('num-fallidos');
+  f.textContent = t.fallidos_mes;
+  f.classList.toggle('hay', t.fallidos_mes > 0);
+}
+
+function _pintarProximosInicio(d) {
+  const el = document.getElementById('inicio-proximos');
   if (!el) return;
-  try {
-    const stats = await apiFetch('/mensajes/stats');
-    const tasaColor = stats.tasa_exito === null ? 'var(--color-muted)'
-      : stats.tasa_exito >= 90 ? 'var(--color-green)'
-      : stats.tasa_exito >= 70 ? 'var(--color-warning)'
-      : 'var(--color-danger)';
-    el.innerHTML = `
-      <div class="stats-row">
-        <div class="stat-card">
-          <div class="stat-value text-green">${stats.programados}</div>
-          <div class="stat-label">Programados</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${stats.enviados}</div>
-          <div class="stat-label">Enviados</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" style="color:var(--color-danger)">${stats.fallidos}</div>
-          <div class="stat-label">Fallidos</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" style="color:var(--color-muted)">${stats.cancelados}</div>
-          <div class="stat-label">Cancelados</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" style="color:${tasaColor}">${stats.tasa_exito !== null ? stats.tasa_exito + '%' : '—'}</div>
-          <div class="stat-label">Tasa de éxito</div>
-        </div>
-      </div>`;
-  } catch {
-    el.innerHTML = '';
+  if (!d.tiene_mensajes) {
+    el.innerHTML = `<div class="vacio"><p>Aún no tienes mensajes programados</p>
+      <button type="button" class="btn btn-primary" onclick="navigate('programar')">＋ Programar el primero</button></div>`;
+    return;
   }
+  if (!d.proximos.length) {
+    el.innerHTML = `<div class="vacio"><p>No tienes envíos pendientes</p>
+      <button type="button" class="btn btn-secondary" onclick="navigate('programar')">＋ Programar mensaje</button></div>`;
+    return;
+  }
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  el.innerHTML = d.proximos.map(m => `
+    <div class="envio-item">
+      <span class="envio-ico" title="${m.tipo_media || 'texto'}">${_ICONO_TIPO[m.tipo_media] || '💬'}</span>
+      <div class="envio-info">
+        <div class="envio-destino">${esc(m.destino)}</div>
+        <div class="envio-fecha">${fmtDate(m.fecha_hora_disparo)}${m.recurrente ? ' · 🔁' : ''}</div>
+      </div>
+      <span class="punto ${m.estado === 'enviando' ? 'punto-azul' : 'punto-naranja'}" title="${m.estado === 'enviando' ? 'Enviando' : 'Pendiente'}"></span>
+    </div>`).join('');
 }
 
-async function loadHistorial(dias) {
-  _histDias = dias;
-  // update active button
-  $$('.hist-rango').forEach(b => {
-    b.classList.toggle('active', Number(b.dataset.dias) === dias);
-  });
-  const el = document.getElementById('dash-chart');
+function _pintarBarrasInicio(dias, tasa) {
+  const el = document.getElementById('inicio-barras');
+  const tasaEl = document.getElementById('inicio-tasa');
   if (!el) return;
-  el.innerHTML = '<div class="spinner"></div>';
-  try {
-    const data = await apiFetch(`/mensajes/historial?dias=${dias}`);
-    if (!data.length) {
-      el.innerHTML = '<div class="chart-empty">Sin actividad en este período</div>';
-      return;
-    }
-    // Fill missing days so chart always shows full range
-    const filled = _fillDias(data, dias);
-    const maxTotal = Math.max(...filled.map(d => d.enviados + d.fallidos), 1);
-    const HEIGHT = 100; // px available for bars
-
-    el.innerHTML = `<div class="chart-wrap">${filled.map(d => {
-      const total = d.enviados + d.fallidos;
-      const hEnv = total ? Math.round((d.enviados / maxTotal) * HEIGHT) : 0;
-      const hFal = total ? Math.round((d.fallidos / maxTotal) * HEIGHT) : 0;
-      const label = d.fecha.slice(5); // MM-DD
-      return `<div class="chart-col" title="${d.fecha}: ${d.enviados} enviados, ${d.fallidos} fallidos">
-        <div class="chart-stacked" style="height:${HEIGHT}px">
-          ${hFal ? `<div class="chart-bar chart-bar-fallido" style="height:${hFal}px"></div>` : ''}
-          ${hEnv ? `<div class="chart-bar chart-bar-enviado" style="height:${hEnv}px"></div>` : ''}
-          ${!total ? `<div style="height:2px;background:var(--color-border);border-radius:2px"></div>` : ''}
-        </div>
-        <div class="chart-label">${label}</div>
-      </div>`;
-    }).join('')}</div>`;
-  } catch {
-    el.innerHTML = '<div class="chart-empty">Error al cargar historial</div>';
-  }
-}
-
-function _fillDias(data, dias) {
-  // Build a map fecha → row, then fill all days in range
-  const map = {};
-  data.forEach(d => { map[d.fecha] = d; });
-  const result = [];
-  const hoy = new Date();
-  for (let i = dias - 1; i >= 0; i--) {
-    const d = new Date(hoy);
-    d.setDate(d.getDate() - i);
-    // Format as YYYY-MM-DD in local time
-    const key = d.toLocaleDateString('sv'); // 'sv' locale gives YYYY-MM-DD
-    result.push(map[key] || { fecha: key, enviados: 0, fallidos: 0 });
-  }
-  return result;
-}
-
-async function loadProximos() {
-  const el = document.getElementById('dash-proximos');
-  if (!el) return;
-  try {
-    const lista = await apiFetch('/mensajes/proximos?limite=5');
-    if (!lista.length) {
-      el.innerHTML = '<p class="text-muted" style="font-size:.83rem">No hay mensajes programados.</p>';
-      return;
-    }
-    el.innerHTML = lista.map(m => {
-      const dest = m.id_grupo.replace('@g.us', '').replace('@s.whatsapp.net', '');
-      const texto = m.texto_mensaje ? m.texto_mensaje.substring(0, 35) + (m.texto_mensaje.length > 35 ? '…' : '') : (m.tipo_media ? `${ICON_MAP[m.tipo_media] || '📎'} ${m.tipo_media}` : '—');
-      const recBadge = m.recurrencia && m.recurrencia !== 'none' ? ` <span style="font-size:.68rem;color:var(--color-info)">🔁</span>` : '';
-      return `<div class="dash-list-item">
-        <span class="badge badge-orange" style="font-size:.68rem;flex-shrink:0">📅</span>
-        <div class="dash-list-dest">${texto}${recBadge}</div>
-        <div class="dash-list-fecha">${fmtDate(m.fecha_hora_disparo)}</div>
-      </div>`;
-    }).join('');
-  } catch {
-    el.innerHTML = '<p class="text-muted" style="font-size:.83rem">—</p>';
-  }
-}
-
-async function loadRecientes() {
-  const el = document.getElementById('dash-recientes');
-  if (!el) return;
-  try {
-    const lista = await apiFetch('/mensajes/recientes?limite=5');
-    if (!lista.length) {
-      el.innerHTML = '<p class="text-muted" style="font-size:.83rem">Sin historial de envíos.</p>';
-      return;
-    }
-    el.innerHTML = lista.map(m => {
-      const dest = m.id_grupo.replace('@g.us', '').replace('@s.whatsapp.net', '');
-      const texto = m.texto_mensaje ? m.texto_mensaje.substring(0, 35) + (m.texto_mensaje.length > 35 ? '…' : '') : (m.tipo_media ? `${ICON_MAP[m.tipo_media] || '📎'} ${m.tipo_media}` : '—');
-      const isOk = m.estado_envio === 'enviado';
-      return `<div class="dash-list-item">
-        <span style="font-size:.9rem;flex-shrink:0">${isOk ? '✅' : '❌'}</span>
-        <div class="dash-list-dest">${texto}</div>
-        <div class="dash-list-fecha">${fmtDate(m.fecha_hora_disparo)}</div>
-      </div>`;
-    }).join('');
-  } catch {
-    el.innerHTML = '<p class="text-muted" style="font-size:.83rem">—</p>';
-  }
+  const max = Math.max(...dias.map(x => x.enviados), 1);
+  const hoyClave = dias.length ? dias[dias.length - 1].fecha : '';
+  el.innerHTML = dias.map(x => {
+    const [y, m, dd] = x.fecha.split('-').map(Number);
+    const dia = new Intl.DateTimeFormat('es-EC', { weekday: 'short', timeZone: 'UTC' })
+      .format(new Date(Date.UTC(y, m - 1, dd))).replace('.', '');
+    const alto = x.enviados ? Math.max(Math.round(x.enviados / max * 100), 6) : 0;
+    return `<div class="barra-col${x.fecha === hoyClave ? ' hoy' : ''}" title="${x.fecha}: ${x.enviados} enviados">
+      <span class="barra-cant">${x.enviados || ''}</span>
+      <div class="barra-area"><div class="barra${x.enviados ? '' : ' cero'}" style="height:${x.enviados ? alto + '%' : '3px'}"></div></div>
+      <span class="barra-dia">${dia}</span>
+    </div>`;
+  }).join('');
+  const sinEnvios = dias.every(x => x.enviados === 0 && x.fallidos === 0);
+  tasaEl.innerHTML = sinEnvios
+    ? 'Sin envíos en los últimos 7 días'
+    : `Tasa de entrega: <strong>${tasa === null ? '—' : tasa + ' %'}</strong>`;
 }
 
 // ============================================================
@@ -490,12 +508,16 @@ function renderPanelSesion() {
   const tarjetas = todasLasSesiones.map(s => `
     <div class="card" id="card-sesion-${s.id_sesion}">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div style="flex:1;min-width:0">
+        <div class="sesion-perfil" style="flex:1">
+         ${_avatarHTML(s.id_sesion, s.perfil_foto_en, s.perfil_nombre, 'lg')}
+         <div style="min-width:0">
+          ${s.perfil_nombre ? `<div class="sesion-perfil-nombre">${String(s.perfil_nombre).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</div>` : ''}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span class="text-mono">${_nombreSesion(s)}</span>
             <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
           </div>
           ${!s.numero_telefono ? `<div class="text-muted" style="font-size:.72rem;margin-top:3px">Escaneando QR…</div>` : ''}
+         </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
@@ -587,6 +609,7 @@ async function verificarEstado(id_sesion) {
     const data = await apiFetch(`/sesiones/${id_sesion}/verificar`);
     await cargarSesionActiva();
     renderPanelSesion();
+    actualizarBadgeConexion();
     showAlert('alert-sesion', `${id_sesion.slice(0,8)}… → ${data.estado_evolution}`, data.estado_evolution === 'open' ? 'success' : 'info');
   } catch (e) {
     showAlert('alert-sesion', e.message, 'error');
@@ -2112,11 +2135,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Filtros tabla mensajes
   $$('.filter-btn').forEach(btn => {
     btn.addEventListener('click', () => filtrarMensajes(btn.dataset.filter));
-  });
-
-  // Rangos historial
-  $$('.hist-rango').forEach(btn => {
-    btn.addEventListener('click', () => loadHistorial(Number(btn.dataset.dias)));
   });
 
   // Pre-fill fecha con hora actual Ecuador (UTC-5), funciona en Android/iOS/desktop

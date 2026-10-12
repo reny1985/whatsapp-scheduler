@@ -7,6 +7,7 @@ Eventos procesados:
   - GROUP_UPDATE  / group.update   → actualiza nombre/tamaño del grupo
   - CONNECTION_UPDATE              → sincroniza estado_conexion de la sesión
 """
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from sqlalchemy import select, text, update
 
 from app.database import AsyncSessionLocal
 from app.models import SesionWhatsApp
+from app.services import perfil
 
 EVOLUTION_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_KEY = os.getenv("EVOLUTION_API_KEY", "")
@@ -136,6 +138,10 @@ async def _sincronizar_conexion(instancia: str, estado_evo: str) -> None:
             "Webhook CONNECTION_UPDATE: instancia='%s' → estado='%s'",
             instancia, nuevo_estado,
         )
+
+    if nuevo_estado == "conectado":
+        # nombre y foto de perfil (como máximo una vez al día); en segundo plano y sin afectar al webhook
+        asyncio.create_task(perfil.actualizar_perfil_si_corresponde(sesion.id_sesion))
 
 
 @router.post("/evolution")

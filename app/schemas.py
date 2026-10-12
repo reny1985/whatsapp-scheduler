@@ -63,6 +63,8 @@ class SesionWhatsAppRead(ORMBase):
     estado_conexion: EstadoConexion
     fecha_creacion: datetime
     fecha_ultima_conexion: datetime | None
+    perfil_nombre: str | None = None
+    perfil_foto_en: datetime | None = None   # si hay foto: GET /sesiones/{id}/foto?v=<este valor>
 
 
 class MensajeProgramadoCreate(BaseModel):

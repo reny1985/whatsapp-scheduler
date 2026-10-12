@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.6 — 2026-10-12 — Inicio amigable, menú con texto y perfil de WhatsApp
+
+- **Menú lateral con texto**: Inicio, Programar, Mensajes, Sesión y, abajo, Salir con su ícono. Computador: ícono + palabra; móvil vertical: palabra de 11 px bajo el ícono. Sección activa resaltada; el menú queda fijo a la altura de la pantalla, así Salir siempre se ve (se quitó el botón Salir de la cabecera)
+- **Inicio sencillo**, de arriba a abajo: saludo con fecha y hora de Ecuador; botón grande "＋ Programar mensaje"; tarjeta de estado de WhatsApp (número(s) con punto verde "Conectado" o rojo "Desconectado" y botón "Ir a Sesión"); 4 tarjetas con número grande (Pendientes, Enviados hoy, Enviados este mes, Fallidos del mes) que llevan a Mensajes con su filtro; próximos 5 envíos con nombre de grupo o número, fecha y hora, ícono del tipo y punto de estado; barras de los últimos 7 días con tasa de entrega; estados vacíos amables. En móvil las tarjetas pasan a 2 columnas, sin scroll horizontal
+- **`GET /dashboard/resumen`**: un solo endpoint con todo lo anterior, con 4 consultas agregadas (el número de consultas no depende de la cantidad de mensajes), "hoy" y "este mes" en America/Guayaquil y siempre filtrado por el usuario actual. Los mensajes sin sesión no se cuentan
+- **Indicador de conexión de la cabecera al instante**: antes se consultaba al cargar la página, sin login, y mostraba "Sin sesión" hasta ~30 s después aunque hubiera una sesión conectada; ahora consulta apenas se entra a la app y distingue "sin login" de "sin sesión"
+- **Nombre y foto de perfil de WhatsApp**: se obtienen de Evolution (`chat/fetchProfile`, con el token de la instancia) al conectarse y al pulsar "Verificar", como máximo una vez al día (reintento en 1 h si algo falla). La foto se descarga y se guarda en `<UPLOAD_DIR>/avatars/<id_sesion>.jpg` (el enlace de WhatsApp caduca y no se guarda) y se sirve con login por `GET /sesiones/{id}/foto`. Se muestra en el saludo del Inicio ("Hola, <nombre> 👋"), en la cabecera y en Sesión; sin foto, iniciales o ícono de usuario. Si algo falla no se rompe nada y el motivo queda en el log sin claves ni URLs firmadas
+- **Seguridad**: la carpeta `avatars/` está bloqueada en `/static/uploads` (404), de modo que las fotos de perfil solo salen por el endpoint con login
+- **Base de datos**: columnas nuevas `perfil_nombre`, `perfil_foto_en` y `perfil_consultado_en` en `sesiones_whatsapp` (migración idempotente, sin tocar datos)
+- Pruebas automáticas: 128
+
 ## v1.0.5 — 2026-10-11 — Confirmar contraseña y ver contraseña
 
 - **Campo "Repetir contraseña"** en Crear cuenta: si no coincide muestra "Las contraseñas no coinciden" en rojo debajo del campo y no envía el formulario
