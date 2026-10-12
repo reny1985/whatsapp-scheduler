@@ -688,8 +688,28 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     return {"estado_evolution": estado_evo, "estado_bd": nuevo_estado, **extra}
 
 
+# Candado por sesión: nunca corren dos sincronizaciones de grupos de la misma sesión a la vez.
+# Quien llega mientras otra está en curso espera a que termine y comparte su resultado.
+_sync_locks: dict[uuid.UUID, asyncio.Lock] = {}
+_sync_ultimo_ok: dict[uuid.UUID, bool] = {}
+
+
 async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str | None) -> bool:
-    """Refresca la caché de grupos_whatsapp (en background o esperando el resultado).
+    """Sincroniza la caché de grupos con candado por sesión (ver _traer_y_guardar_grupos)."""
+    lock = _sync_locks.setdefault(id_sesion, asyncio.Lock())
+    if lock.locked():
+        logger.info("Sincronización de grupos de '%s' ya en curso: se espera su resultado", instancia)
+        async with lock:
+            pass
+        return _sync_ultimo_ok.get(id_sesion, True)
+    async with lock:
+        ok = await _traer_y_guardar_grupos(id_sesion, instancia, token)
+        _sync_ultimo_ok[id_sesion] = ok
+        return ok
+
+
+async def _traer_y_guardar_grupos(id_sesion: uuid.UUID, instancia: str, token: str | None) -> bool:
+    """Trae los grupos de Evolution y refresca la caché grupos_whatsapp.
 
     Devuelve False si no se pudo consultar a Evolution (para que el endpoint lo avise); True si
     la consulta funcionó, aunque no haya grupos.
@@ -725,6 +745,8 @@ async def _refrescar_grupos_bg(id_sesion: uuid.UUID, instancia: str, token: str 
         return False
 
 
+MSG_GRUPO_NO_EXISTE = "El grupo ya no existe o tu número ya no pertenece a él"
+MSG_ERROR_VERIFICAR_GRUPO = "No se pudo consultar WhatsApp. Intenta de nuevo en un momento."
 MSG_ERROR_SYNC_GRUPOS = (
     "No se pudieron sincronizar los grupos desde WhatsApp. Revisa que la sesión esté conectada "
     "e intenta de nuevo en unos minutos."
@@ -778,39 +800,6 @@ async def listar_grupos(
     return grupos
 
 
-def _solo_digitos(jid: str | None) -> str:
-    return (jid or "").split("@")[0].split(":")[0]
-
-
-def evaluar_grupo(info: dict, mi_numero: str | None) -> dict:
-    """Interpreta la respuesta de Evolution findGroupInfos para la sesión con ese número.
-
-    Estados: ok | solo_admins | no_miembro.
-    """
-    nombre = info.get("subject") or ""
-    participantes = info.get("participants") if isinstance(info.get("participants"), list) else []
-    total = info.get("size") or len(participantes)
-    base = {"nombre": nombre, "participantes": total}
-    mi = _solo_digitos(mi_numero)
-
-    yo = None
-    if mi and participantes:
-        yo = next(
-            (p for p in participantes if mi in (_solo_digitos(p.get("jid")), _solo_digitos(p.get("id")))),
-            None,
-        )
-        if yo is None:
-            return {**base, "estado": "no_miembro",
-                    "mensaje": "Tu sesión ya no pertenece a este grupo: el mensaje fallará."}
-
-    es_admin = bool(yo and yo.get("admin") in ("admin", "superadmin"))
-    if info.get("announce") and not es_admin:
-        return {**base, "estado": "solo_admins",
-                "mensaje": "Solo los administradores pueden enviar mensajes en este grupo y tu número "
-                           "no es administrador: el mensaje fallará."}
-    return {**base, "estado": "ok", "mensaje": f"{nombre} · {total} participantes"}
-
-
 @router.get("/{id_sesion}/verificar-grupo")
 async def verificar_grupo(
     id_sesion: uuid.UUID,
@@ -818,8 +807,9 @@ async def verificar_grupo(
     db: AsyncSession = Depends(get_db),
     _: Usuario = Depends(get_current_user),
 ):
-    """Consulta a Evolution (group/findGroupInfos) si el grupo existe, si la sesión es miembro
-    y si solo los administradores pueden escribir. La clave de Evolution nunca llega al navegador."""
+    """Comprueba con Evolution (group/findGroupInfos) que el grupo existe y devuelve su nombre y
+    número de participantes. 404 de Evolution → el grupo ya no existe o la sesión ya no pertenece.
+    La clave de Evolution nunca llega al navegador."""
     sesion = await db.get(SesionWhatsApp, id_sesion)
     if not sesion:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
@@ -837,23 +827,26 @@ async def verificar_grupo(
             )
     except httpx.HTTPError as exc:
         logger.warning("verificar-grupo: Evolution no respondió (%s)", type(exc).__name__)
-        raise HTTPException(status_code=502, detail="No se pudo consultar WhatsApp. Intenta de nuevo en un momento.")
+        raise HTTPException(status_code=502, detail=MSG_ERROR_VERIFICAR_GRUPO)
 
     if r.status_code == 404:
-        # Evolution responde item-not-found tanto si el grupo no existe como si la sesión salió de él
-        return {"estado": "no_existe", "nombre": "", "participantes": 0,
-                "mensaje": "El grupo ya no existe o tu sesión ya no pertenece a él."}
-    if r.status_code >= 400:
+        return {"estado": "no_existe", "nombre": "", "participantes": 0, "mensaje": MSG_GRUPO_NO_EXISTE}
+    if r.status_code != 200:
         logger.warning("verificar-grupo: Evolution respondió %s: %s", r.status_code, r.text[:200])
-        raise HTTPException(status_code=502, detail="No se pudo consultar WhatsApp. Intenta de nuevo en un momento.")
+        raise HTTPException(status_code=502, detail=MSG_ERROR_VERIFICAR_GRUPO)
     try:
         info = r.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail="Respuesta inválida de WhatsApp.")
+        info = None
     if not isinstance(info, dict):
-        return {"estado": "no_existe", "nombre": "", "participantes": 0,
-                "mensaje": "El grupo ya no existe o tu sesión ya no pertenece a él."}
-    return evaluar_grupo(info, sesion.numero_telefono)
+        raise HTTPException(status_code=502, detail=MSG_ERROR_VERIFICAR_GRUPO)
+
+    nombre = info.get("subject") or ""
+    participantes = info.get("size")
+    if participantes is None:
+        participantes = len(info.get("participants") or [])
+    return {"estado": "ok", "nombre": nombre, "participantes": participantes,
+            "mensaje": f"{nombre} · {participantes} participantes"}
 
 
 @router.get("/{id_sesion}/resolver-enlace")

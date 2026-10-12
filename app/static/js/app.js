@@ -1103,7 +1103,7 @@ async function _loadGruposInterno(forzar) {
   }
 }
 
-// ---- Verificar grupo (existe, la sesión es miembro, solo-admins) ----
+// ---- Verificar grupo (existe y cuántos participantes tiene) ----
 
 function _limpiarVerificacionGrupo(ctx) {
   const el = document.getElementById(ctx === 'edit' ? 'edit-grupo-verificado' : 'grupo-verificado');
@@ -1131,8 +1131,6 @@ async function verificarGrupo(ctx = 'main') {
     const d = await apiFetch(`/sesiones/${idSesion}/verificar-grupo?jid=${encodeURIComponent(jid)}`);
     if (d.estado === 'ok') {
       pintar('rgba(37,211,102,.12)', 'var(--color-green)', `✅ ${d.nombre || 'Grupo'} · ${d.participantes} participantes`);
-    } else if (d.estado === 'solo_admins') {
-      pintar('rgba(255,191,0,.14)', 'var(--color-warning)', `⚠️ ${d.mensaje}`);
     } else {
       pintar('rgba(241,92,109,.12)', 'var(--color-danger)', `❌ ${d.mensaje}`);
     }

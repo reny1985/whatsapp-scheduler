@@ -1,6 +1,6 @@
 """
-Pruebas de GET /sesiones/{id}/verificar-grupo y de la sincronización forzada de grupos.
-Simulan Evolution API (sin red real).
+Pruebas de GET /sesiones/{id}/verificar-grupo, de la sincronización forzada de grupos y del
+candado por sesión. Simulan Evolution API (sin red real).
 """
 import uuid
 from unittest.mock import MagicMock, patch
@@ -22,39 +22,9 @@ JID = "120363406271783192@g.us"
 TOKEN_INSTANCIA = "token-secreto-instancia"
 
 
-def _info(announce=False, yo_admin=None, incluir_yo=True, size=3):
-    ps = [{"id": "111@lid", "jid": "593900000001@s.whatsapp.net", "admin": "superadmin"},
-          {"id": "222@lid", "jid": "593900000002@s.whatsapp.net", "admin": None}]
-    if incluir_yo:
-        ps.append({"id": "333@lid", "jid": f"{MI}@s.whatsapp.net", "admin": yo_admin})
-    return {"id": JID, "subject": "Pruebas Enviafast", "size": size, "announce": announce, "participants": ps}
-
-
-# ── evaluar_grupo (lógica pura) ──────────────────────────────────────────────
-
-async def test_grupo_normal_ok():
-    r = sesiones.evaluar_grupo(_info(), MI)
-    assert r["estado"] == "ok" and r["nombre"] == "Pruebas Enviafast" and r["participantes"] == 3
-
-
-async def test_solo_admins_y_no_soy_admin_avisa():
-    r = sesiones.evaluar_grupo(_info(announce=True, yo_admin=None), MI)
-    assert r["estado"] == "solo_admins"
-    assert "Solo los administradores pueden enviar mensajes" in r["mensaje"] and "fallará" in r["mensaje"]
-
-
-@pytest.mark.parametrize("rol", ["admin", "superadmin"])
-async def test_solo_admins_pero_soy_admin_ok(rol):
-    assert sesiones.evaluar_grupo(_info(announce=True, yo_admin=rol), MI)["estado"] == "ok"
-
-
-async def test_sesion_ya_no_es_miembro():
-    r = sesiones.evaluar_grupo(_info(incluir_yo=False), MI)
-    assert r["estado"] == "no_miembro" and "ya no pertenece" in r["mensaje"]
-
-
-async def test_sin_numero_de_sesion_no_inventa_no_miembro():
-    assert sesiones.evaluar_grupo(_info(), None)["estado"] == "ok"
+def _info(size=3):
+    return {"id": JID, "subject": "Pruebas Enviafast", "size": size,
+            "participants": [{"id": "111@lid", "jid": "593900000001@s.whatsapp.net", "admin": None}]}
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────────────
@@ -119,17 +89,27 @@ async def test_endpoint_grupo_ok_usa_findGroupInfos(api):
     assert TOKEN_INSTANCIA not in r.text
 
 
-async def test_endpoint_solo_admins(api):
-    _FakeClient.respuesta = (200, _info(announce=True))
+async def test_endpoint_no_evalua_administradores(api):
+    """Aunque el grupo sea solo-admins y el número no sea admin, solo informa nombre y participantes."""
+    info = _info(size=50); info["announce"] = True
+    _FakeClient.respuesta = (200, info)
     r = await api(_DB(), f"/sesiones/{SID}/verificar-grupo?jid={JID}")
-    assert r.json()["estado"] == "solo_admins"
+    assert r.status_code == 200 and r.json()["estado"] == "ok"
+    assert r.json()["participantes"] == 50 and "admin" not in r.json()["mensaje"].lower()
+
+
+async def test_endpoint_participantes_sin_size_usa_la_lista(api):
+    info = _info(); del info["size"]
+    _FakeClient.respuesta = (200, info)
+    r = await api(_DB(), f"/sesiones/{SID}/verificar-grupo?jid={JID}")
+    assert r.json()["participantes"] == 1
 
 
 async def test_endpoint_grupo_inexistente(api):
     _FakeClient.respuesta = (404, {"status": 404, "response": {"message": ["Error: item-not-found"]}})
     r = await api(_DB(), f"/sesiones/{SID}/verificar-grupo?jid={JID}")
     assert r.status_code == 200 and r.json()["estado"] == "no_existe"
-    assert "ya no existe o tu sesión ya no pertenece" in r.json()["mensaje"]
+    assert r.json()["mensaje"] == "El grupo ya no existe o tu número ya no pertenece a él"
 
 
 async def test_endpoint_jid_no_es_de_grupo(api):
@@ -149,6 +129,12 @@ async def test_endpoint_sesion_inexistente(api):
 
 async def test_endpoint_evolution_no_responde(api):
     _FakeClient.excepcion = httpx.ReadTimeout("timeout")
+    r = await api(_DB(), f"/sesiones/{SID}/verificar-grupo?jid={JID}")
+    assert r.status_code == 502 and "No se pudo consultar WhatsApp" in r.json()["detail"]
+
+
+async def test_endpoint_evolution_error_500(api):
+    _FakeClient.respuesta = (500, {"error": "boom"})
     r = await api(_DB(), f"/sesiones/{SID}/verificar-grupo?jid={JID}")
     assert r.status_code == 502 and "No se pudo consultar WhatsApp" in r.json()["detail"]
 
@@ -191,3 +177,63 @@ async def test_cache_vacia_y_sincronizacion_falla_avisa_en_vez_de_lista_vacia(ap
     with patch("app.routers.sesiones._refrescar_grupos_bg", side_effect=refrescar):
         r = await api(_DB(grupos=[]), f"/sesiones/{SID}/grupos")
     assert r.status_code == 502
+
+
+# ── Candado por sesión ───────────────────────────────────────────────────────
+
+import asyncio
+
+
+@pytest.fixture
+def sync_lento(monkeypatch):
+    """Sustituye la sincronización real por una lenta que cuenta cuántas veces corre."""
+    sesiones._sync_locks.clear(); sesiones._sync_ultimo_ok.clear()
+    estado = {"corridas": 0, "activas": 0, "max_activas": 0, "resultado": True}
+
+    async def falsa(id_sesion, instancia, token):
+        estado["corridas"] += 1
+        estado["activas"] += 1
+        estado["max_activas"] = max(estado["max_activas"], estado["activas"])
+        await asyncio.sleep(0.15)
+        estado["activas"] -= 1
+        return estado["resultado"]
+
+    monkeypatch.setattr(sesiones, "_traer_y_guardar_grupos", falsa)
+    return estado
+
+
+async def test_dos_sincronizaciones_de_la_misma_sesion_no_corren_a_la_vez(sync_lento):
+    r = await asyncio.gather(*[sesiones._refrescar_grupos_bg(SID, "wa-test", "t") for _ in range(3)])
+    assert r == [True, True, True]
+    assert sync_lento["corridas"] == 1 and sync_lento["max_activas"] == 1
+
+
+async def test_sesiones_distintas_si_pueden_sincronizar_en_paralelo(sync_lento):
+    otra = uuid.UUID("00000000-0000-0000-0000-000000000031")
+    await asyncio.gather(sesiones._refrescar_grupos_bg(SID, "wa-a", "t"),
+                         sesiones._refrescar_grupos_bg(otra, "wa-b", "t"))
+    assert sync_lento["corridas"] == 2 and sync_lento["max_activas"] == 2
+
+
+async def test_quien_espera_recibe_el_fallo_de_la_sincronizacion_en_curso(sync_lento):
+    sync_lento["resultado"] = False
+    r = await asyncio.gather(sesiones._refrescar_grupos_bg(SID, "wa-test", "t"),
+                             sesiones._refrescar_grupos_bg(SID, "wa-test", "t"))
+    assert r == [False, False] and sync_lento["corridas"] == 1
+
+
+async def test_candado_se_libera_y_permite_una_nueva_sincronizacion(sync_lento):
+    await sesiones._refrescar_grupos_bg(SID, "wa-test", "t")
+    await sesiones._refrescar_grupos_bg(SID, "wa-test", "t")
+    assert sync_lento["corridas"] == 2
+
+
+async def test_candado_se_libera_si_la_sincronizacion_lanza_excepcion(monkeypatch):
+    sesiones._sync_locks.clear(); sesiones._sync_ultimo_ok.clear()
+
+    async def rota(*a): raise RuntimeError("boom")
+
+    monkeypatch.setattr(sesiones, "_traer_y_guardar_grupos", rota)
+    with pytest.raises(RuntimeError):
+        await sesiones._refrescar_grupos_bg(SID, "wa-test", "t")
+    assert not sesiones._sync_locks[SID].locked()
