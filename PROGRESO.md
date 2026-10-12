@@ -24,9 +24,9 @@
 - 69 pruebas automáticas pasan.
 
 ## Números vinculados
-- **Production** tiene vinculado el **593961409996**.
-- **Staging** usa otro número.
-- **Regla: no usar el mismo número en staging y production a la vez.**
+- **Production** (`enviafast.net`) usa el **0969829845** (593969829845).
+- **Staging** usa el **0961409996** (593961409996).
+- **Regla: nunca el mismo número en staging y production.**
 
 ## Entornos
 - Production: `https://enviafast.net`. Staging: `https://thorough-adventure-staging.up.railway.app`.
@@ -35,7 +35,7 @@
 
 ## Pendientes futuros (en orden de prioridad)
 1. ✅ **Hecho (v1.0.3):** verificar `enviafast.net` en Resend y configurar el remitente.
-2. Botón "Eliminar" sesión: si Evolution no confirma el borrado de la instancia, avisar al usuario en vez de borrar solo en la BD. Revisar si la instancia `wa-b71909aa` sigue viva en Evolution.
+2. Botón "Eliminar" sesión: si Evolution no confirma el borrado de la instancia, avisar al usuario en vez de borrar solo en la BD. (Revisado el 2026-10-11: `wa-b71909aa` ya no existe en Evolution, así que el borrado sí se había completado aunque el log dijo "No se pudo eliminar"; también se borraron las instancias de prueba `reny-1`, `Braulio-test-4` y `reny-02`. En Evolution quedan solo `wa-aba7dfdc` (production) y `wa-f823c4f4` (staging). Falta únicamente el aviso al usuario.)
 3. Mensajes sin sesión (`id_sesion` nulo): mostrarlos como "sin sesión" y permitir reasignarlos a otra sesión.
 4. Separar los datos por cliente (multiusuario), imprescindible antes de vender.
 5. Seguridad de Evolution: verificar la clave global y poner HTTPS.
