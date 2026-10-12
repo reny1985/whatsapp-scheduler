@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.5 — 2026-10-11 — Confirmar contraseña y ver contraseña
+
+- **Campo "Repetir contraseña"** en Crear cuenta: si no coincide muestra "Las contraseñas no coinciden" en rojo debajo del campo y no envía el formulario
+- **Validación también en el backend**: `/auth/setup` recibe `confirmar_password` y responde 422 "Las contraseñas no coinciden" sin tocar la base de datos ni enviar correo; las contraseñas nunca se escriben en el log
+- **Mínimo 8 caracteres** con su mensaje claro en el navegador ("La contraseña debe tener al menos 8 caracteres")
+- **Botón de ojo** independiente en los 3 campos de contraseña (login, contraseña y repetir contraseña): oculta por defecto, área táctil ≥ 40 px, no envía el formulario, `aria-label` "Mostrar contraseña" / "Ocultar contraseña"
+- Pruebas automáticas: 93
+
 ## v1.0.4 — 2026-10-11 — Ajustes de móvil y grupos
 
 - **Salir visible en móvil**: en pantallas angostas (≤ 640 px) el correo de la cabecera se reduce a un ícono y el título se acorta con "…", así el botón Salir ya no queda fuera de la pantalla
