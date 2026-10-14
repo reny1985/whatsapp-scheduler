@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.7 — 2026-10-14 — Mensajes vencidos, avisos de desconexión y calendario
+
+- **Tolerancia de retraso de 5 minutos** (`TOLERANCIA_RETRASO_MIN`, un solo lugar), medida al TOMAR el mensaje y no cuando sale. Dos fases: tomar (queda `en_cola` si entró a tiempo, o `vencido` con su motivo: sesión eliminada, WhatsApp desconectado, sin credenciales o servidor sin actividad) y enviar (lo que entró a la cola a tiempo se envía siempre, aunque la cola dure más). Se registra cuándo se tomó (`tomado_en`)
+- **Mensajes vencidos**: estado propio con color y motivo, filtro "Vencidos", botón "Reprogramar" que abre Programar con los datos cargados, y tarjeta "Vencidos" en el Inicio. Una serie recurrente no se corta si un envío vence (se crea la próxima ocurrencia futura). "Enviar ahora" se guarda como "ahora" para no vencerse
+- **Dueño del mensaje por `id_usuario`**: columna nueva en `mensajes_programados`, migración idempotente y sin borrar datos (se rellena desde la sesión; los sin sesión van al usuario piloto). Inicio, Mensajes, estadísticas, historial y el programador filtran por dueño, no por la sesión; el programador comprueba que la sesión sea del mismo usuario
+- **Reasignación al re-vincular el MISMO número**: cada mensaje guarda el número con el que se programó (`numero_origen`); al conectarse una sesión con ese número, sus mensajes programados sin sesión pasan a ella. Los vencidos no se reasignan solos
+- **Mensajes sin sesión visibles**: filtro "Sin sesión", etiqueta, "Reasignar" por mensaje y "Reasignar todos", aviso en Mensajes y en el Inicio (cuentan en Pendientes/Vencidos)
+- **Aviso de desconexión**: aviso en el Inicio ("⚠️ Tu WhatsApp está desconectado: N mensajes pendientes no se enviarán…") y **correo** "[Enviafast] Tu WhatsApp se desconectó" (número, pendientes, hora del próximo, botón "Volver a vincular"), un correo por desconexión. Un chequeo de cada minuto revisa el estado REAL en Evolution de todas las sesiones con pendientes y deja una línea en el log por revisión; el correo se confirma con Evolution antes de enviarse. Eliminar/desvincular a propósito no envía correo
+- **Sesión**: botón "Desvincular" (antes "Eliminar") con diálogo que avisa de los N mensajes pendientes y que quedarán en pausa; nota visible sobre salir de Enviafast vs. desvincular; tarjeta de cada número rediseñada (foto, nombre y número completos arriba, botones en una fila aparte)
+- **Calendario flatpickr** en computador (copia local en `/static/vendor`, español, tema oscuro, 12 h con a. m./p. m., botón "✓ Listo", sin fechas pasadas), también en la edición; en móvil se mantiene el selector nativo
+- **Nombre de perfil de WhatsApp** desde `fetchInstances.profileName` (en cuentas personales `fetchProfile.name` trae el número, que se descarta); candado por sesión contra consultas dobles
+- **Mensajes en pantallas angostas**: cada fila se apila como tarjeta, con motivo y botones a la vista
+- Archivos estáticos versionados (`?v=`) y `index.html` sin caché; hojas externas con `crossorigin` (evita un error de flatpickr)
+- Base de datos (migraciones idempotentes): `mensajes_programados.tomado_en`, `.id_usuario` (NOT NULL, FK, índice), `.numero_origen`; `sesiones_whatsapp.aviso_desconexion_en`, `.desconectada_en`
+- Pruebas automáticas: 205
+
 ## v1.0.6 — 2026-10-12 — Inicio amigable, menú con texto y perfil de WhatsApp
 
 - **Menú lateral con texto**: Inicio, Programar, Mensajes, Sesión y, abajo, Salir con su ícono. Computador: ícono + palabra; móvil vertical: palabra de 11 px bajo el ícono. Sección activa resaltada; el menú queda fijo a la altura de la pantalla, así Salir siempre se ve (se quitó el botón Salir de la cabecera)
