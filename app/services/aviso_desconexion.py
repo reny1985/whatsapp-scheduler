@@ -15,7 +15,7 @@ from sqlalchemy import func, select, update
 
 from app.database import AsyncSessionLocal
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario
-from app.services import correo
+from app.services import correo, evolution_estado
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -90,6 +90,20 @@ async def avisar_desconexion(id_sesion, espera: float = 0) -> bool:
             )).one()
             if not n:
                 logger.info("Aviso de desconexión: '%s' no tiene mensajes pendientes, no se envía", sesion.instancia_evolution)
+                return False
+
+            # Confirma con Evolution que de verdad sigue desconectada (el estado guardado puede estar viejo)
+            real = await evolution_estado.consultar_estado(sesion)
+            if real is None:
+                logger.info("Aviso de desconexión: no se pudo confirmar con Evolution el estado de '%s'; no se envía, se reintenta",
+                            sesion.instancia_evolution)
+                return False
+            if real == "open":
+                logger.info("Aviso de desconexión: Evolution dice que '%s' está conectada (estado guardado: %s); "
+                            "se corrige y no se envía", sesion.instancia_evolution, sesion.estado_conexion)
+                await db.execute(update(SesionWhatsApp).where(SesionWhatsApp.id_sesion == id_sesion)
+                                 .values(estado_conexion="conectado", desconectada_en=None, aviso_desconexion_en=None))
+                await db.commit()
                 return False
 
             # Reclama el aviso (un solo correo por desconexión, aunque lleguen varios eventos a la vez)

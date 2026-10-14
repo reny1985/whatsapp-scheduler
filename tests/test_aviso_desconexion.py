@@ -16,7 +16,7 @@ from app.database import get_db
 from app.main import app
 from app.models import MensajeProgramado, SesionWhatsApp
 from app.routers import sesiones, webhook
-from app.services import aviso_desconexion, correo, reasignar
+from app.services import aviso_desconexion, correo, evolution_estado, reasignar
 from tests.test_sesiones_perdidas import Session  # noqa: F401  (fixture: BD temporal con migraciones)
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -30,6 +30,7 @@ def mundo(Session, monkeypatch):
     monkeypatch.setattr(correo, "enviar", enviar)
     monkeypatch.setattr(aviso_desconexion, "AsyncSessionLocal", Session)
     monkeypatch.setattr(aviso_desconexion, "GRACIA_SEG", 0)               # sin espera en las pruebas
+    monkeypatch.setattr(evolution_estado, "consultar_estado", AsyncMock(return_value="close"))   # Evolution confirma la caída
     monkeypatch.setattr(reasignar, "AsyncSessionLocal", Session)
     monkeypatch.setattr(webhook, "AsyncSessionLocal", Session)
     monkeypatch.setattr(webhook, "_fetch_instancia_info", AsyncMock(return_value={"apikey": "k", "numero": "593961409996"}))

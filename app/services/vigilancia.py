@@ -1,29 +1,26 @@
 """
 services/vigilancia.py
 Chequeo de cada minuto de las conexiones de WhatsApp (job del programador). Existe porque el aviso de
-desconexión no puede depender solo del evento del webhook, que puede perderse:
+desconexión no puede depender solo del evento del webhook, que puede perderse, ni del estado guardado en la base:
 
- a) Para las sesiones marcadas 'conectado' con mensajes pendientes, pregunta a Evolution por el estado real
-    (como máximo una vez cada 2 min por sesión). Si no está 'open', la marca desconectada.
- b) Para las sesiones desconectadas con mensajes pendientes y sin aviso previo (y desconectadas hace más de
-    2 min, para no avisar por microcortes), envía el correo. Sigue siendo UN correo por desconexión.
+ a) REVISIÓN DEL ESTADO REAL: para TODAS las sesiones con mensajes pendientes, pregunta a Evolution por el estado
+    real (como máximo una vez cada 2 min por sesión) y corrige la base si difiere (conectada↔desconectada). Cada
+    revisión deja una línea en el log con el estado real, el guardado y los pendientes.
+ b) AVISO: para las sesiones desconectadas con pendientes y sin aviso previo (y desconectadas hace más de 2 min,
+    para no avisar por microcortes) envía el correo. Antes de enviarlo, avisar_desconexion confirma con Evolution
+    que sigue desconectada. Sigue siendo UN correo por desconexión.
 Nunca lanza: un fallo aquí no debe afectar al envío de mensajes.
 """
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
-import httpx
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 
 from app.database import AsyncSessionLocal
 from app.models import MensajeProgramado, SesionWhatsApp
-from app.services import aviso_desconexion
+from app.services import aviso_desconexion, evolution_estado, reasignar
 
 logger = logging.getLogger("whatsapp_scheduler")
-
-EVOLUTION_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
-EVOLUTION_KEY = os.getenv("EVOLUTION_API_KEY", "")
 
 GRACIA = timedelta(minutes=2)             # desconectada al menos este tiempo antes de enviar el correo
 VERIFICAR_CADA = timedelta(minutes=2)     # frecuencia máxima de consulta a Evolution por sesión
@@ -36,47 +33,54 @@ def _hay_pendientes():
                           MensajeProgramado.estado_envio.in_(PENDIENTES))
 
 
-async def consultar_estado(sesion) -> str | None:
-    """Estado real en Evolution ('open' | 'close' | 'connecting') o None si no se pudo consultar."""
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
-            r = await client.get(f"{EVOLUTION_URL}/instance/connectionState/{sesion.instancia_evolution}",
-                                 headers={"apikey": sesion.token_autorizacion or EVOLUTION_KEY})
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        datos = r.json()
-        return str((datos.get("instance") or datos).get("state") or "").lower() or None
-    except Exception as exc:
-        logger.info("Vigilancia: no se pudo consultar el estado de '%s' (%s: %s)",
-                    sesion.instancia_evolution, type(exc).__name__, exc)
-        return None
+async def _revisar_estado_real(ahora: datetime) -> None:
+    """a) Compara el estado guardado con el real de Evolution, para todas las sesiones con pendientes."""
+    reconectadas = []
+    async with AsyncSessionLocal() as db:
+        sesiones = (await db.execute(
+            select(SesionWhatsApp).where(
+                SesionWhatsApp.numero_telefono.is_not(None),
+                SesionWhatsApp.estado_conexion.in_(("conectado", "desconectado")),   # no se toca una vinculación en curso (QR)
+                _hay_pendientes(),
+            )
+        )).scalars().all()
+        for s in sesiones:
+            if ahora - _ultima_verificacion.get(s.id_sesion, datetime.min.replace(tzinfo=timezone.utc)) < VERIFICAR_CADA:
+                continue
+            _ultima_verificacion[s.id_sesion] = ahora
+            pendientes = (await db.execute(
+                select(func.count()).select_from(MensajeProgramado)
+                .where(MensajeProgramado.id_sesion == s.id_sesion, MensajeProgramado.estado_envio.in_(PENDIENTES))
+            )).scalar_one()
+            real = await evolution_estado.consultar_estado(s)
+            guardado = s.estado_conexion
+
+            if real is None:
+                logger.info("Vigilancia: '%s' → estado real: sin respuesta de Evolution | guardado: %s | pendientes: %d | acción: ninguna",
+                            s.instancia_evolution, guardado, pendientes)
+                continue
+            abierta = real == "open"
+            if abierta and guardado != "conectado":
+                s.estado_conexion, s.desconectada_en, s.aviso_desconexion_en = "conectado", None, None
+                await db.commit()
+                reconectadas.append(s.id_sesion)
+                accion = "corregida a conectado"
+            elif not abierta and guardado == "conectado":
+                s.estado_conexion, s.desconectada_en = "desconectado", ahora
+                await db.commit()
+                accion = "marcada desconectada (no llegó el evento del webhook)"
+            else:
+                accion = "sin cambios"
+            logger.info("Vigilancia: '%s' → estado real: %s | guardado: %s | pendientes: %d | acción: %s",
+                        s.instancia_evolution, real, guardado, pendientes, accion)
+    for id_sesion in reconectadas:      # volvió a estar conectada: los mensajes sin sesión del mismo número pasan a ella
+        await reasignar.reasignar_huerfanos(id_sesion)
 
 
 async def vigilar_conexiones() -> None:
     try:
         ahora = datetime.now(timezone.utc)
-
-        # a) sesiones "conectadas" con pendientes: ¿siguen conectadas de verdad?
-        async with AsyncSessionLocal() as db:
-            conectadas = (await db.execute(
-                select(SesionWhatsApp).where(
-                    SesionWhatsApp.estado_conexion == "conectado",
-                    SesionWhatsApp.numero_telefono.is_not(None),
-                    _hay_pendientes(),
-                )
-            )).scalars().all()
-            for s in conectadas:
-                if ahora - _ultima_verificacion.get(s.id_sesion, datetime.min.replace(tzinfo=timezone.utc)) < VERIFICAR_CADA:
-                    continue
-                _ultima_verificacion[s.id_sesion] = ahora
-                estado = await consultar_estado(s)
-                if estado is None or estado == "open":
-                    continue
-                s.estado_conexion = "desconectado"
-                s.desconectada_en = ahora
-                await db.commit()
-                logger.warning("Vigilancia: '%s' aparece '%s' en Evolution aunque estaba conectada; se marca desconectada "
-                               "(no llegó el evento del webhook)", s.instancia_evolution, estado)
+        await _revisar_estado_real(ahora)
 
         # b) sesiones desconectadas con pendientes y sin aviso: correo (una vez por desconexión)
         async with AsyncSessionLocal() as db:

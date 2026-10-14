@@ -17,7 +17,7 @@ from app.main import app
 from app.migrate import run_migrations
 from app.models import MensajeProgramado, SesionWhatsApp
 from app.routers import sesiones, webhook
-from app.services import aviso_desconexion, correo, reasignar, vigilancia
+from app.services import aviso_desconexion, correo, evolution_estado, reasignar, vigilancia
 from tests.test_sesiones_perdidas import Session  # noqa: F401  (fixture: BD temporal con migraciones)
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
@@ -36,6 +36,8 @@ def mundo(Session, monkeypatch):
         monkeypatch.setattr(modulo, "AsyncSessionLocal", Session)
     monkeypatch.setattr(aviso_desconexion, "GRACIA_SEG", 0)
     monkeypatch.setattr(vigilancia, "_ultima_verificacion", {})
+    # por defecto, Evolution confirma que la sesión NO está conectada (cada prueba lo cambia cuando le interesa)
+    monkeypatch.setattr(evolution_estado, "consultar_estado", AsyncMock(return_value="close"))
     monkeypatch.setattr(webhook.perfil, "actualizar_perfil_si_corresponde", AsyncMock(return_value=True))
     yield Session, enviar
     app.dependency_overrides.clear()
@@ -254,7 +256,7 @@ async def test_evento_perdido_la_vigilancia_detecta_la_caida_real_y_luego_envia_
     sid = await _sesion(maker, estado="conectado")             # en la BD sigue "conectado": el evento se perdió
     await _msg(maker, sid=sid)
     estado = AsyncMock(return_value="close")
-    monkeypatch.setattr(vigilancia, "consultar_estado", estado)
+    monkeypatch.setattr(evolution_estado, "consultar_estado", estado)
     await vigilancia.vigilar_conexiones()
     s = await _s(maker, sid)
     assert s.estado_conexion == "desconectado" and s.desconectada_en is not None
@@ -271,7 +273,7 @@ async def test_la_vigilancia_no_consulta_a_evolution_mas_de_una_vez_cada_2_min_p
     sid = await _sesion(maker)
     await _msg(maker, sid=sid)
     estado = AsyncMock(return_value="open")
-    monkeypatch.setattr(vigilancia, "consultar_estado", estado)
+    monkeypatch.setattr(evolution_estado, "consultar_estado", estado)
     await vigilancia.vigilar_conexiones(); await vigilancia.vigilar_conexiones(); await vigilancia.vigilar_conexiones()
     assert estado.await_count == 1
     assert (await _s(maker, sid)).estado_conexion == "conectado"
@@ -283,7 +285,7 @@ async def test_conectada_de_verdad_o_evolution_sin_respuesta_no_cambia_nada(mund
     await _verificar_correo_usuario(maker)
     sid = await _sesion(maker)
     await _msg(maker, sid=sid)
-    monkeypatch.setattr(vigilancia, "consultar_estado", AsyncMock(return_value=estado_evolution))
+    monkeypatch.setattr(evolution_estado, "consultar_estado", AsyncMock(return_value=estado_evolution))
     await vigilancia.vigilar_conexiones()
     assert (await _s(maker, sid)).estado_conexion == "conectado"
     enviar.assert_not_awaited()
