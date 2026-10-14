@@ -580,31 +580,31 @@ function renderPanelSesion() {
 
   const tarjetas = todasLasSesiones.map(s => `
     <div class="card" id="card-sesion-${s.id_sesion}">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div class="sesion-perfil" style="flex:1">
-         ${_avatarHTML(s.id_sesion, s.perfil_foto_en, s.perfil_nombre, 'lg')}
-         <div style="min-width:0">
+      <div class="sesion-perfil">
+        ${_avatarHTML(s.id_sesion, s.perfil_foto_en, s.perfil_nombre, 'lg')}
+        <div class="sesion-datos">
           ${s.perfil_nombre ? `<div class="sesion-perfil-nombre">${String(s.perfil_nombre).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</div>` : ''}
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="text-mono">${_nombreSesion(s)}</span>
+          <div class="sesion-numero-fila">
+            <span class="text-mono sesion-numero">${_nombreSesion(s)}</span>
             <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
           </div>
           ${!s.numero_telefono ? `<div class="text-muted" style="font-size:.72rem;margin-top:3px">Escaneando QR…</div>` : ''}
-         </div>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
-          <button class="btn btn-sm btn-secondary" onclick="verificarEstado('${s.id_sesion}')">🔄 Verificar</button>
-          ${s.estado_conexion === 'conectado' ? `<button class="btn btn-sm btn-secondary" onclick="cargarGruposSesion('${s.id_sesion}')">🔃 Grupos</button>` : ''}
-          <button class="btn btn-sm btn-danger" onclick="eliminarSesion('${s.id_sesion}')">Eliminar</button>
-        </div>
+      </div>
+      <div class="sesion-acciones">
+        ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
+        <button class="btn btn-sm btn-secondary" onclick="verificarEstado('${s.id_sesion}')">🔄 Verificar</button>
+        ${s.estado_conexion === 'conectado' ? `<button class="btn btn-sm btn-secondary" onclick="cargarGruposSesion('${s.id_sesion}')">🔃 Grupos</button>` : ''}
+        <button class="btn btn-sm btn-danger" onclick="desvincularSesion('${s.id_sesion}')">Desvincular</button>
       </div>
       <div id="qr-container-${s.id_sesion}" style="display:none;margin-top:16px"></div>
       <div id="grupos-container-${s.id_sesion}" style="display:none;margin-top:16px"></div>
     </div>`).join('');
 
+  const nota = todasLasSesiones.length ? `<p class="nota-sesion">${NOTA_DESVINCULAR}</p>` : '';
   el.innerHTML = `
     ${tarjetas}
+    ${nota}
     <div class="card">
       <div class="card-title">Añadir cuenta de WhatsApp</div>
       <div id="alert-sesion"></div>
@@ -989,20 +989,25 @@ function _iniciarPollingPairing(id_sesion) {
   _pairingPolls[id_sesion] = { timer, startTime };
 }
 
-async function eliminarSesion(id_sesion) {
+const NOTA_DESVINCULAR = "Puedes salir de Enviafast desde cualquier dispositivo y tus mensajes se enviarán igual. "
+  + "Pero si desvinculas tu WhatsApp (con 'Desvincular' aquí, o desde WhatsApp → Dispositivos vinculados en tu teléfono), "
+  + "tus mensajes programados quedarán en pausa hasta que lo vuelvas a vincular.";
+
+async function desvincularSesion(id_sesion) {
   let n = 0;
   try { n = (await apiFetch(`/sesiones/${id_sesion}/pendientes`)).pendientes || 0; } catch { /* sin conteo: confirma sin detalle */ }
   const aviso = n > 0
     ? (n === 1 ? 'Este número tiene 1 mensaje programado; quedará en pausa y no se enviará.'
                : `Este número tiene ${n} mensajes programados; quedarán en pausa y no se enviarán.`)
     : '';
-  if (!confirm((aviso ? aviso + '\n\n' : '') + '¿Eliminar esta sesión?')) return;
+  const advertencia = 'Tus mensajes programados quedarán en pausa hasta que vuelvas a vincular este número.';
+  if (!confirm('Desvincular este número\n\n' + (aviso ? aviso + '\n\n' : '') + advertencia)) return;
   try {
     await apiFetch(`/sesiones/${id_sesion}`, { method: 'DELETE' });
     await cargarSesionActiva();
     renderPanelSesion();
   } catch (e) {
-    alert('Error al eliminar: ' + e.message);
+    alert('Error al desvincular: ' + e.message);
   }
 }
 

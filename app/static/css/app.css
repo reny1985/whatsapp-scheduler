@@ -731,8 +731,15 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
 .avatar-lg { width: 56px; height: 56px; font-size: 1.2rem; }
 .perfil-avatar { display: inline-flex; margin-left: 12px; flex-shrink: 0; }
 @media (max-width: 640px) { .perfil-avatar { margin-left: 0; } }
-.sesion-perfil { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.sesion-perfil-nombre { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tarjeta de cada número: foto, nombre completo y número completo en un bloque; los botones, en una fila aparte */
+.sesion-perfil { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.sesion-datos { flex: 1; min-width: 0; }
+.sesion-perfil-nombre { font-weight: 600; font-size: 1.02rem; line-height: 1.25; overflow-wrap: anywhere; }   /* nombre completo, sin cortar */
+.sesion-numero-fila { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+.sesion-numero { white-space: nowrap; }                                                                   /* número completo */
+.sesion-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--color-border); }
+.sesion-acciones .btn { flex: 0 1 auto; }
+@media (max-width: 640px) { .sesion-acciones .btn { flex: 1 1 auto; justify-content: center; white-space: nowrap; } }   /* se acomodan en 2 líneas si no caben */
 
 /* ============================================================
    Mensajes vencidos, aviso de desconexión y calendario (flatpickr, tema oscuro de la app)
@@ -814,3 +821,10 @@ input.flatpickr-input.form-control[readonly] { cursor: pointer; }
 #mensajes-huerfanos .aviso-desconexion { margin-bottom: 14px; }
 .badge-sin-sesion { color: var(--color-warning); background: rgba(255,191,0,.12); margin-left: 4px; }
 .sin-sesion-txt { font-size: .72rem; color: var(--color-warning); margin-left: 6px; white-space: nowrap; }
+
+/* Nota de la pantalla Sesión sobre desvincular */
+.nota-sesion {
+  margin: -4px 0 18px; padding: 12px 14px; font-size: .86rem; line-height: 1.5; color: var(--color-text);
+  background: rgba(83,189,235,.08); border: 1px solid rgba(83,189,235,.35); border-left: 3px solid var(--color-info);
+  border-radius: var(--radius-sm);
+}
