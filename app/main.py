@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
@@ -69,6 +69,8 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 if static_dir.exists():
     app.mount("/static/css", StaticFiles(directory=str(static_dir / "css")), name="css")
     app.mount("/static/js", StaticFiles(directory=str(static_dir / "js")), name="js")
+    if (static_dir / "vendor").exists():
+        app.mount("/static/vendor", StaticFiles(directory=str(static_dir / "vendor")), name="vendor")
 
 
 class _UploadsStaticFiles(StaticFiles):
@@ -105,7 +107,16 @@ async def health(db: AsyncSession = Depends(get_db)):
         )
 
 
-@app.get("/", response_class=FileResponse, include_in_schema=False)
+def _version_estaticos() -> str:
+    """Cambia en cada despliegue (fecha de los archivos): evita que el navegador use un app.js/app.css viejo."""
+    archivos = [BASE_DIR / "static" / "js" / "app.js", BASE_DIR / "static" / "css" / "app.css"]
+    return str(int(max((p.stat().st_mtime for p in archivos if p.exists()), default=0)))
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def frontend():
-    index = BASE_DIR / "templates" / "index.html"
-    return FileResponse(str(index))
+    html = (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    v = _version_estaticos()
+    for ruta in ("/static/js/app.js", "/static/css/app.css"):
+        html = html.replace(f'"{ruta}"', f'"{ruta}?v={v}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

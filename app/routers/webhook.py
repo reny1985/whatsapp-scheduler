@@ -18,7 +18,7 @@ from sqlalchemy import select, text, update
 
 from app.database import AsyncSessionLocal
 from app.models import SesionWhatsApp
-from app.services import perfil
+from app.services import aviso_desconexion, perfil, reasignar
 
 EVOLUTION_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_KEY = os.getenv("EVOLUTION_API_KEY", "")
@@ -112,14 +112,19 @@ async def _sincronizar_conexion(instancia: str, estado_evo: str) -> None:
         if estado_evo.lower() == "connecting" and sesion.numero_telefono:
             nuevo_estado = "desconectado"
 
+        estado_previo = sesion.estado_conexion
         extra = {}
         if nuevo_estado == "conectado":
+            extra["aviso_desconexion_en"] = None    # reconectó: el próximo corte podrá avisar de nuevo
+            extra["desconectada_en"] = None
             info = await _fetch_instancia_info(instancia)
             if info.get("apikey"):
                 extra["token_autorizacion"] = info["apikey"]
             if info.get("numero") and not sesion.numero_telefono:
                 extra["numero_telefono"] = info["numero"]
                 logger.info("Webhook: número obtenido para '%s': %s", instancia, info["numero"])
+        elif estado_previo == "conectado":
+            extra["desconectada_en"] = datetime.now(timezone.utc)   # desde cuándo está desconectada
 
         await db.execute(
             update(SesionWhatsApp)
@@ -142,6 +147,14 @@ async def _sincronizar_conexion(instancia: str, estado_evo: str) -> None:
     if nuevo_estado == "conectado":
         # nombre y foto de perfil (como máximo una vez al día); en segundo plano y sin afectar al webhook
         asyncio.create_task(perfil.actualizar_perfil_si_corresponde(sesion.id_sesion))
+        # si es el MISMO número que antes, los mensajes programados que quedaron sin sesión pasan a esta
+        await reasignar.reasignar_huerfanos(sesion.id_sesion)
+    elif nuevo_estado == "desconectado" and estado_previo == "conectado":
+        # pasó de conectada a desconectada: si hay mensajes pendientes, un correo de aviso (uno por corte),
+        # tras una espera corta por si se trata de un microcorte
+        logger.info("Desconexión detectada en '%s' (webhook): se avisará por correo en %ds si sigue desconectada y hay pendientes",
+                    instancia, aviso_desconexion.GRACIA_SEG)
+        asyncio.create_task(aviso_desconexion.avisar_desconexion(sesion.id_sesion, espera=aviso_desconexion.GRACIA_SEG))
 
 
 @router.post("/evolution")

@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WhatsApp Scheduler</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" crossorigin="anonymous" />
+  <!-- crossorigin="anonymous" en las hojas externas: flatpickr lee document.styleSheets[].cssRules y falla con hojas de otro dominio sin CORS -->
   <!-- app.css va DESPUÉS de intl-tel-input para que el tema oscuro del selector de países prevalezca -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/css/intlTelInput.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/css/intlTelInput.css" crossorigin="anonymous" />
+  <link rel="stylesheet" href="/static/vendor/flatpickr/flatpickr.min.css" />
+  <link rel="stylesheet" href="/static/vendor/flatpickr/plugins/confirmDate/confirmDate.css" />
   <link rel="stylesheet" href="/static/css/app.css" />
 </head>
 <body>
@@ -188,6 +191,8 @@
         <button type="button" class="btn btn-primary btn-grande" onclick="navigate('programar')">＋ Programar mensaje</button>
 
         <div id="inicio-error"></div>
+        <div id="inicio-aviso"></div>
+        <div id="inicio-aviso-sin-sesion"></div>
 
         <div class="card inicio-estado" id="inicio-sesion"><div class="spinner"></div></div>
 
@@ -203,6 +208,9 @@
           </button>
           <button type="button" class="tarjeta-num tarjeta-fallidos" onclick="irAMensajes('fallido')">
             <span class="tarjeta-valor" id="num-fallidos">–</span><span class="tarjeta-nombre">Fallidos</span>
+          </button>
+          <button type="button" class="tarjeta-num tarjeta-vencidos" id="tarjeta-vencidos" style="display:none" onclick="irAMensajes('vencido')">
+            <span class="tarjeta-valor" id="num-vencidos">0</span><span class="tarjeta-nombre">Vencidos · reprogramar</span>
           </button>
         </div>
 
@@ -433,10 +441,14 @@
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="programado" style="font-size:.78rem">Programados</button>
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="enviado" style="font-size:.78rem">Enviados</button>
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="fallido" style="font-size:.78rem">Fallidos</button>
+        <button class="btn btn-sm btn-secondary filter-btn" data-filter="vencido" style="font-size:.78rem">Vencidos</button>
+        <button class="btn btn-sm btn-secondary filter-btn" data-filter="sin_sesion" style="font-size:.78rem">Sin sesión</button>
         <button class="btn btn-sm btn-secondary filter-btn" data-filter="cancelado" style="font-size:.78rem">Cancelados</button>
         <div class="spacer" style="flex:1"></div>
         <button class="btn btn-sm btn-secondary" onclick="loadMensajes()">🔄 Actualizar</button>
       </div>
+
+      <div id="mensajes-huerfanos"></div>
 
       <div class="card" style="padding:0">
         <div class="table-wrap">
@@ -555,6 +567,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/intlTelInput.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/intl-tel-input@23/build/js/utils.js"></script>
+<script src="/static/vendor/flatpickr/flatpickr.min.js"></script>
+<script src="/static/vendor/flatpickr/l10n/es.js"></script>
+<script src="/static/vendor/flatpickr/plugins/confirmDate/confirmDate.js"></script>
 <script src="/static/js/app.js"></script>
 <script>
   // Contador de caracteres en textarea

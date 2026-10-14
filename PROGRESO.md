@@ -1,10 +1,18 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-12 (estado tras v1.0.6)
+Última actualización: 2026-10-14 (estado tras v1.0.7)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.6**, sobre `main`.
+**Production (`https://enviafast.net`) corre v1.0.7**, sobre `main`.
+
+- **v1.0.7** — mensajes vencidos, dueño por usuario, avisos y calendario:
+  - **Tolerancia de retraso** (`TOLERANCIA_RETRASO_MIN = 5`, un solo lugar, `app/scheduler.py`) medida al TOMAR el mensaje, en dos fases: tomar (`en_cola` o `vencido` con su motivo) y enviar (todo lo que entró a la cola a tiempo se envía siempre). Estados nuevos `en_cola` y `vencido`; los vencidos se reprograman desde Mensajes. "Enviar ahora" se guarda como "ahora" y una serie recurrente no se corta si un envío vence.
+  - **Dueño por `id_usuario`** directo en `mensajes_programados` (migración idempotente, sin borrar datos; los sin sesión van al usuario piloto). Inicio, Mensajes, estadísticas y el programador filtran por dueño, no por la sesión.
+  - **Reasignación al re-vincular el MISMO número** (cada mensaje guarda `numero_origen`): los programados sin sesión pasan a la sesión nueva; los vencidos no se reasignan solos. **Mensajes sin sesión visibles** (filtro, etiqueta, "Reasignar" y "Reasignar todos") y contados en el Inicio.
+  - **Aviso de desconexión**: aviso en el Inicio y **correo** ("[Enviafast] Tu WhatsApp se desconectó", un correo por desconexión). Un chequeo de cada minuto (`services/vigilancia.py`) revisa el estado REAL en Evolution de todas las sesiones con pendientes y deja rastro en el log (`Vigilancia: … estado real | guardado | pendientes | acción`); el correo se confirma con Evolution antes de enviarse (si no responde, no se envía y se reintenta).
+  - **Sesión**: botón "Desvincular" (antes "Eliminar") con advertencia y aviso de N pendientes, nota visible sobre desvincular, tarjeta del número rediseñada (foto, nombre y número completos; botones en fila aparte). Eliminar/desvincular a propósito no envía correo.
+  - **Calendario flatpickr** (local en `/static/vendor`, español, tema oscuro, 12 h, "✓ Listo", sin fechas pasadas) en computador; selector nativo en móvil. **Nombre de perfil** desde `fetchInstances.profileName` (en cuentas personales `fetchProfile.name` trae el número). **Mensajes en tarjetas** en móvil. Archivos estáticos versionados (`?v=`) y `index` sin caché.
 
 - **v1.0.6** — Inicio amigable, menú y perfil:
   - Menú lateral con texto (ícono + palabra en computador; palabra de 11 px bajo el ícono en móvil), sección activa resaltada y "Salir" siempre visible abajo.
@@ -39,7 +47,10 @@
   - Documentos llegan con su nombre original, extensión y `mimetype` correctos (ya no como "BIN"); se aceptan también `.xls`, `.pptx` y `.csv`.
   - `error_envio`: si Evolution falla, el mensaje queda `fallido` con el motivo.
   - Corrección de la pérdida de sesiones y mensajes: la limpieza automática solo borra sesiones nunca conectadas; `connecting` en una sesión con número queda `desconectado`; la FK de mensajes pasó a `ON DELETE SET NULL`, así que borrar una sesión ya no borra sus mensajes.
-- 128 pruebas automáticas pasan.
+- 205 pruebas automáticas pasan.
+
+## Decisiones de producto
+- **Planes:** el plan **Profesional ($9) incluye 1 solo número de WhatsApp** (ya no 2). Los planes **Equipo** y **Empresarial** están por definir.
 
 ## Números vinculados
 - **Production** (`enviafast.net`) usa el **0969829845** (593969829845).
@@ -52,13 +63,14 @@
 - Respaldos de production en `~/Desktop/Respaldos_Enviafast/` (se usa `pg_dump` 18 de Homebrew).
 
 ## Pendientes futuros (en orden de prioridad)
-1. ✅ **Hecho (v1.0.3):** verificar `enviafast.net` en Resend y configurar el remitente.
-2. Botón "Eliminar" sesión: si Evolution no confirma el borrado de la instancia, avisar al usuario en vez de borrar solo en la BD. (Revisado el 2026-10-11: `wa-b71909aa` ya no existe en Evolution, así que el borrado sí se había completado aunque el log dijo "No se pudo eliminar"; también se borraron las instancias de prueba `reny-1`, `Braulio-test-4` y `reny-02`. En Evolution quedan solo `wa-aba7dfdc` (production) y `wa-f823c4f4` (staging). Falta únicamente el aviso al usuario.)
-3. Mensajes sin sesión (`id_sesion` nulo): mostrarlos como "sin sesión" y permitir reasignarlos a otra sesión.
-4. Separar los datos por cliente (multiusuario), imprescindible antes de vender.
-5. Seguridad de Evolution: verificar la clave global y poner HTTPS.
-6. Ondas en notas de voz: requieren Evolution v2 (PR #2346); probar antes en un servidor aparte.
-7. Agregar los botones de cámara nativa al formulario de edición de mensajes.
-8. Error de consola "Unexpected token 'export'": viene de `utils.js` de intl-tel-input, que se carga como script clásico (es un módulo). Investigar si afecta la validación/formato de números.
-9. **Seguridad:** los adjuntos en `/static/uploads` son públicos con nombre aleatorio. Antes de vender, usar enlaces firmados que caduquen.
-10. Mensajes sin sesión (`id_sesion` nulo) no se cuentan en el Inicio (no se sabe de qué usuario son); relacionado con el pendiente 3.
+1. **PRIORITARIO — v1.0.8 (antes de vender): envío escalonado.** Hoy los mensajes se envían en serie y sin pausa (~1,1–1,7 s cada uno), lo que se parece a un bot y arriesga el número. Agregar: (a) pausa aleatoria entre envíos a números individuales; (b) aviso "se enviarán entre HH:MM y HH:MM" al programar varios mensajes a la misma hora; (c) límites por hora y por día según el plan.
+2. **Seguridad — Evolution en un subdominio con HTTPS** (no la IP por HTTP): hoy se llama a `http://159.69.248.218`, y hay redes corporativas que la bloquean ("Web Page Blocked"). Incluye verificar la clave global.
+3. **Logo de Enviafast en los correos:** subir el archivo a `/static` y definir `EMAIL_LOGO_URL` (el lugar ya está preparado en el correo).
+4. Separar los datos por cliente (multiusuario), imprescindible antes de vender. (Avance en v1.0.7: los mensajes ya tienen `id_usuario`; faltan sesiones/plantillas por cliente y el registro de usuarios nuevos.)
+5. **Seguridad:** los adjuntos en `/static/uploads` son públicos con nombre aleatorio. Antes de vender, usar enlaces firmados que caduquen.
+6. Botón "Desvincular": si Evolution no confirma el borrado de la instancia, avisar al usuario en vez de borrar solo en la BD.
+7. Ondas en notas de voz: requieren Evolution v2 (PR #2346); probar antes en un servidor aparte.
+8. Agregar los botones de cámara nativa al formulario de edición de mensajes.
+9. Error de consola "Unexpected token 'export'": viene de `utils.js` de intl-tel-input, que se carga como script clásico (es un módulo). Investigar si afecta la validación/formato de números.
+10. ✅ **Hecho (v1.0.7):** mensajes sin sesión visibles y contados, con reasignación al re-vincular el mismo número.
+11. ✅ **Hecho (v1.0.3):** verificar `enviafast.net` en Resend y configurar el remitente.

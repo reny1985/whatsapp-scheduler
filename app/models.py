@@ -80,6 +80,8 @@ class SesionWhatsApp(Base):
     perfil_nombre: Mapped[str | None] = mapped_column(String(255))
     perfil_foto_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     perfil_consultado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    aviso_desconexion_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    desconectada_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     instancia_evolution: Mapped[str] = mapped_column(
         String(100), unique=True, nullable=False
     )
@@ -110,6 +112,7 @@ class MensajeProgramado(Base):
     __mapper_args__ = {"eager_defaults": True}
     __table_args__ = (
         Index("idx_mensajes_fecha_estado", "fecha_hora_disparo", "estado_envio"),
+        Index("idx_mensajes_usuario_estado", "id_usuario", "estado_envio", "fecha_hora_disparo"),
     )
 
     id_mensaje: Mapped[uuid.UUID] = mapped_column(
@@ -123,6 +126,13 @@ class MensajeProgramado(Base):
         ForeignKey("sesiones_whatsapp.id_sesion", ondelete="SET NULL", name="fk_sesion"),
         nullable=True,
     )
+    # Dueño del mensaje: independiente de la sesión (si la sesión se borra, el mensaje sigue siendo del usuario)
+    id_usuario: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id_usuario", ondelete="CASCADE", name="mensajes_programados_id_usuario_fkey"),
+        nullable=False,
+    )
+    numero_origen: Mapped[str | None] = mapped_column(String(30))   # número con el que se programó
     id_grupo: Mapped[str] = mapped_column(String(255), nullable=False)
     texto_mensaje: Mapped[str | None] = mapped_column(Text)
     tipo_media: Mapped[str | None] = mapped_column(String(50))
@@ -141,7 +151,8 @@ class MensajeProgramado(Base):
         ForeignKey("mensajes_programados.id_mensaje", ondelete="SET NULL", name="fk_origen"),
         nullable=True,
     )
-    error_envio: Mapped[str | None] = mapped_column(Text)
+    error_envio: Mapped[str | None] = mapped_column(Text)   # motivo del fallo o del vencimiento
+    tomado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     fecha_creacion: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )

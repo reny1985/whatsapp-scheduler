@@ -557,7 +557,7 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
   .topbar { padding: 0 12px; gap: 8px; }
   .topbar h1 { font-size: .95rem; flex: 0 1 auto; }
   .topbar .spacer { flex: 1 1 0; min-width: 0; }
-  .topbar #conn-badge { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
+  .topbar #conn-badge { white-space: nowrap; flex-shrink: 0; }   /* el título cede el espacio, no el estado */
   /* el correo se oculta (queda la foto/ícono de perfil, y el correo en su title) */
   .user-badge { display: none; }
   /* campo a todo el ancho; los botones pasan a la línea de abajo, uno al lado del otro */
@@ -731,5 +731,100 @@ tbody tr:hover td { background: rgba(255,255,255,.03); }
 .avatar-lg { width: 56px; height: 56px; font-size: 1.2rem; }
 .perfil-avatar { display: inline-flex; margin-left: 12px; flex-shrink: 0; }
 @media (max-width: 640px) { .perfil-avatar { margin-left: 0; } }
-.sesion-perfil { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.sesion-perfil-nombre { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tarjeta de cada número: foto, nombre completo y número completo en un bloque; los botones, en una fila aparte */
+.sesion-perfil { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.sesion-datos { flex: 1; min-width: 0; }
+.sesion-perfil-nombre { font-weight: 600; font-size: 1.02rem; line-height: 1.25; overflow-wrap: anywhere; }   /* nombre completo, sin cortar */
+.sesion-numero-fila { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+.sesion-numero { white-space: nowrap; }                                                                   /* número completo */
+.sesion-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--color-border); }
+.sesion-acciones .btn { flex: 0 1 auto; }
+@media (max-width: 640px) { .sesion-acciones .btn { flex: 1 1 auto; justify-content: center; white-space: nowrap; } }   /* se acomodan en 2 líneas si no caben */
+
+/* ============================================================
+   Mensajes vencidos, aviso de desconexión y calendario (flatpickr, tema oscuro de la app)
+   ============================================================ */
+:root { --color-vencido: #C792EA; }
+.badge-vencido { color: var(--color-vencido); background: rgba(199,146,234,.14); }
+.motivo-vencido { display: block; margin-top: 4px; font-size: .74rem; color: var(--color-muted); max-width: 320px; white-space: normal; line-height: 1.35; }
+
+.aviso-desconexion {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: rgba(255,191,0,.10); border: 1px solid rgba(255,191,0,.45); border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-md); padding: 14px 16px; font-size: .92rem; line-height: 1.4;
+}
+.aviso-desconexion .aviso-txt { flex: 1 1 240px; min-width: 0; }
+
+.tarjeta-vencidos { border-color: rgba(199,146,234,.5); }
+.tarjeta-vencidos .tarjeta-valor { color: var(--color-vencido); }
+.inicio-tarjetas.con-vencidos { grid-template-columns: repeat(5, 1fr); }
+@media (max-width: 640px) {
+  .inicio-tarjetas.con-vencidos { grid-template-columns: repeat(2, 1fr); }
+  .inicio-tarjetas.con-vencidos .tarjeta-vencidos { grid-column: 1 / -1; }
+}
+
+/* Calendario flatpickr con la paleta de la app */
+.flatpickr-calendar {
+  background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border);
+  box-shadow: 0 10px 36px rgba(0,0,0,.55); border-radius: 12px; font-family: var(--font); width: 320px;
+}
+.flatpickr-calendar.arrowTop:before, .flatpickr-calendar.arrowTop:after { border-bottom-color: var(--color-surface); }
+.flatpickr-calendar.arrowBottom:before, .flatpickr-calendar.arrowBottom:after { border-top-color: var(--color-surface); }
+.flatpickr-months .flatpickr-month, .flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month input.cur-year, .flatpickr-weekdays, span.flatpickr-weekday { background: transparent; color: var(--color-text); fill: var(--color-text); }
+.flatpickr-current-month .flatpickr-monthDropdown-months { background: var(--color-surface); }
+.flatpickr-current-month .flatpickr-monthDropdown-months .flatpickr-monthDropdown-month { background: var(--color-surface2); color: var(--color-text); }
+span.flatpickr-weekday { color: var(--color-muted); font-weight: 600; }
+.flatpickr-months .flatpickr-prev-month, .flatpickr-months .flatpickr-next-month { color: var(--color-muted); fill: var(--color-muted); }
+.flatpickr-months .flatpickr-prev-month:hover svg, .flatpickr-months .flatpickr-next-month:hover svg { fill: var(--color-green); }
+.flatpickr-day { color: var(--color-text); border-radius: 8px; }
+.flatpickr-day:hover, .flatpickr-day:focus { background: var(--color-surface2); border-color: var(--color-surface2); }
+.flatpickr-day.today { border-color: var(--color-green); }
+.flatpickr-day.today:hover { background: var(--color-surface2); color: var(--color-text); }
+.flatpickr-day.selected, .flatpickr-day.selected:hover { background: var(--color-green); border-color: var(--color-green); color: #052e16; font-weight: 700; }
+.flatpickr-day.flatpickr-disabled, .flatpickr-day.flatpickr-disabled:hover, .flatpickr-day.prevMonthDay, .flatpickr-day.nextMonthDay { color: rgba(134,150,160,.45); background: transparent; border-color: transparent; }
+.flatpickr-day.prevMonthDay.selected, .flatpickr-day.nextMonthDay.selected { color: #052e16; }
+.flatpickr-time { border-top: 1px solid var(--color-border); }
+.flatpickr-time input, .flatpickr-time .flatpickr-am-pm, .flatpickr-time .flatpickr-time-separator { background: transparent; color: var(--color-text); font-weight: 600; }
+.flatpickr-time input:hover, .flatpickr-time input:focus, .flatpickr-time .flatpickr-am-pm:hover, .flatpickr-time .flatpickr-am-pm:focus { background: var(--color-surface2); }
+.flatpickr-time .numInputWrapper span.arrowUp:after { border-bottom-color: var(--color-muted); }
+.flatpickr-time .numInputWrapper span.arrowDown:after { border-top-color: var(--color-muted); }
+.numInputWrapper span { border-color: var(--color-border); }
+/* botón "✓ Listo" (plugin confirmDate): grande y fácil de tocar/clicar */
+.flatpickr-confirm {
+  display: block; width: calc(100% - 20px); margin: 4px 10px 10px; height: auto; padding: 10px 12px; line-height: 1.2;
+  background: var(--color-green) !important; color: #052e16 !important; border-radius: 8px; font-weight: 700; font-size: .95rem;
+  text-align: center; cursor: pointer; visibility: visible; max-height: none; opacity: 1;
+}
+.flatpickr-confirm:hover { background: var(--color-green-dk) !important; }
+.flatpickr-calendar.hasTime .flatpickr-confirm { margin-top: 6px; }
+input.flatpickr-input.form-control[readonly] { cursor: pointer; }
+
+/* Mensajes en pantallas angostas: cada fila se apila como tarjeta (así se ven el estado, el motivo y los botones sin desplazarse de lado) */
+@media (max-width: 640px) {
+  #page-mensajes .table-wrap table, #page-mensajes .table-wrap tbody { display: block; width: 100%; }
+  #page-mensajes .table-wrap thead { display: none; }
+  #mensajes-table-body tr { display: block; padding: 12px 14px; border-bottom: 1px solid var(--color-border); }
+  #mensajes-table-body td { display: block; padding: 4px 0; border: 0; white-space: normal !important; word-break: break-word; }
+  #mensajes-table-body td.col-id { display: none; }
+  #mensajes-table-body td[data-label]::before {
+    content: attr(data-label); display: block; font-size: .66rem; color: var(--color-muted);
+    text-transform: uppercase; letter-spacing: .05em; margin-bottom: 1px;
+  }
+  #mensajes-table-body td.col-acciones { padding-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #mensajes-table-body td.col-acciones .btn { margin-right: 0 !important; }
+  .motivo-vencido { max-width: none; }
+}
+
+/* Mensajes sin sesión */
+.aviso-info { background: rgba(83,189,235,.10); border-color: rgba(83,189,235,.45); border-left-color: var(--color-info); }
+#mensajes-huerfanos .aviso-desconexion { margin-bottom: 14px; }
+.badge-sin-sesion { color: var(--color-warning); background: rgba(255,191,0,.12); margin-left: 4px; }
+.sin-sesion-txt { font-size: .72rem; color: var(--color-warning); margin-left: 6px; white-space: nowrap; }
+
+/* Nota de la pantalla Sesión sobre desvincular */
+.nota-sesion {
+  margin: -4px 0 18px; padding: 12px 14px; font-size: .86rem; line-height: 1.5; color: var(--color-text);
+  background: rgba(83,189,235,.08); border: 1px solid rgba(83,189,235,.35); border-left: 3px solid var(--color-info);
+  border-radius: var(--radius-sm);
+}

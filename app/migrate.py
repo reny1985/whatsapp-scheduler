@@ -51,6 +51,10 @@ _STEPS = [
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_nombre VARCHAR(255)",
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_foto_en TIMESTAMPTZ",
     "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS perfil_consultado_en TIMESTAMPTZ",
+    # Aviso por correo de desconexión: se envía a lo sumo uno por desconexión (se limpia al reconectar)
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS aviso_desconexion_en TIMESTAMPTZ",
+    # Desde cuándo está desconectada (para esperar unos minutos antes de avisar y no avisar por microcortes)
+    "ALTER TABLE sesiones_whatsapp ADD COLUMN IF NOT EXISTS desconectada_en TIMESTAMPTZ",
 
     # ── mensajes_programados ──────────────────────────────────────────────
     """
@@ -73,6 +77,56 @@ _STEPS = [
         REFERENCES mensajes_programados(id_mensaje) ON DELETE SET NULL
     """,
     "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS error_envio TEXT",
+    # Cuándo lo tomó el programador (para medir el retraso). Los estados nuevos 'en_cola' y 'vencido'
+    # no necesitan migración: estado_envio es VARCHAR sin restricción y los datos existentes no cambian.
+    "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS tomado_en TIMESTAMPTZ",
+
+    # ── Dueño del mensaje: id_usuario directo (ya no depende de la sesión) ───────────────────────────
+    # Idempotente y sin borrar datos: (1) columnas nuevas, (2) se rellenan desde la sesión, (3) los que no
+    # tienen sesión van al usuario piloto (hoy hay uno solo por base; si no existe el piloto, al más antiguo),
+    # (4) NOT NULL solo cuando ya no queda ninguna fila sin dueño, (5) FK + índice.
+    "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS id_usuario UUID",
+    # Número con el que se programó: sirve para reasignar al re-vincular el MISMO número
+    "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS numero_origen VARCHAR(30)",
+    """
+    UPDATE mensajes_programados m
+       SET id_usuario = s.id_usuario
+      FROM sesiones_whatsapp s
+     WHERE m.id_sesion = s.id_sesion AND m.id_usuario IS NULL
+    """,
+    """
+    UPDATE mensajes_programados m
+       SET numero_origen = s.numero_telefono
+      FROM sesiones_whatsapp s
+     WHERE m.id_sesion = s.id_sesion AND m.numero_origen IS NULL AND s.numero_telefono IS NOT NULL
+    """,
+    """
+    UPDATE mensajes_programados
+       SET id_usuario = (
+             SELECT id_usuario FROM usuarios
+              ORDER BY (id_usuario = CAST('00000000-0000-0000-0000-000000000001' AS uuid)) DESC, fecha_registro ASC
+              LIMIT 1)
+     WHERE id_usuario IS NULL
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM mensajes_programados WHERE id_usuario IS NULL) THEN
+            ALTER TABLE mensajes_programados ALTER COLUMN id_usuario SET NOT NULL;
+        END IF;
+    END $$
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mensajes_programados_id_usuario_fkey') THEN
+            ALTER TABLE mensajes_programados
+                ADD CONSTRAINT mensajes_programados_id_usuario_fkey
+                FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE CASCADE;
+        END IF;
+    END $$
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_mensajes_usuario_estado ON mensajes_programados (id_usuario, estado_envio, fecha_hora_disparo)",
     # Borrar una sesión no debe borrar sus mensajes: FK CASCADE → SET NULL (sin tocar datos)
     "ALTER TABLE mensajes_programados ALTER COLUMN id_sesion DROP NOT NULL",
     "ALTER TABLE mensajes_programados DROP CONSTRAINT IF EXISTS mensajes_programados_id_sesion_fkey",

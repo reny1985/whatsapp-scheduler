@@ -17,9 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_admin
 from app.database import get_db, AsyncSessionLocal
-from app.models import SesionWhatsApp, Usuario, condicion_sesion_nunca_conectada
+from app.models import MensajeProgramado, SesionWhatsApp, Usuario, condicion_sesion_nunca_conectada
 from app.schemas import SesionWhatsAppCreate, SesionWhatsAppRead, PILOTO_ID_USUARIO
-from app.services import perfil
+from app.services import aviso_desconexion, perfil, reasignar
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -508,6 +508,24 @@ async def obtener_pairing_code(
     return {"pairing_code": code}
 
 
+@router.get("/{id_sesion}/pendientes")
+async def mensajes_pendientes_de_sesion(
+    id_sesion: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    """Cuántos mensajes pendientes tiene la sesión (para avisar antes de eliminarla)."""
+    sesion = await db.get(SesionWhatsApp, id_sesion)
+    if not sesion or sesion.id_usuario != usuario.id_usuario:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    n = (await db.execute(
+        select(func.count()).select_from(MensajeProgramado)
+        .where(MensajeProgramado.id_sesion == id_sesion,
+               MensajeProgramado.estado_envio.in_(("programado", "en_cola", "enviando")))
+    )).scalar_one()
+    return {"pendientes": n}
+
+
 @router.delete("/{id_sesion}", status_code=status.HTTP_204_NO_CONTENT)
 async def eliminar_sesion(
     id_sesion: uuid.UUID,
@@ -684,11 +702,16 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     if estado_evo == "connecting" and sesion.numero_telefono:
         nuevo_estado = "desconectado"
 
+    estado_previo = sesion.estado_conexion
     extra = {}
     if nuevo_estado == "conectado":
+        extra["aviso_desconexion_en"] = None    # reconectó: el próximo corte podrá avisar de nuevo
+        extra["desconectada_en"] = None
         numero = await _obtener_numero_instancia(sesion.instancia_evolution)
         if numero:
             extra["numero_telefono"] = numero
+    elif estado_previo == "conectado":
+        extra["desconectada_en"] = datetime.now(timezone.utc)   # desde cuándo está desconectada
 
     stmt = update(SesionWhatsApp).where(
         SesionWhatsApp.id_sesion == id_sesion
@@ -707,6 +730,9 @@ async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_
     if nuevo_estado == "conectado":
         # como máximo una vez al día; nunca falla ni demora más de unos segundos
         await perfil.actualizar_perfil_si_corresponde(id_sesion)
+        await reasignar.reasignar_huerfanos(id_sesion)
+    elif nuevo_estado == "desconectado" and estado_previo == "conectado":
+        asyncio.create_task(aviso_desconexion.avisar_desconexion(id_sesion, espera=aviso_desconexion.GRACIA_SEG))
 
     return {"estado_evolution": estado_evo, "estado_bd": nuevo_estado, **extra}
 

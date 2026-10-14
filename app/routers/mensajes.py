@@ -2,7 +2,8 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func, text
+from pydantic import BaseModel
+from sqlalchemy import select, func, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_admin
@@ -14,19 +15,49 @@ logger = logging.getLogger("whatsapp_scheduler")
 router = APIRouter(prefix="/mensajes", tags=["mensajes"])
 
 
+class ReasignarRequest(BaseModel):
+    id_sesion: uuid.UUID
+
+
+async def _sesion_del_usuario(db: AsyncSession, id_sesion: uuid.UUID, usuario: Usuario) -> SesionWhatsApp:
+    res = await db.execute(
+        select(SesionWhatsApp).where(SesionWhatsApp.id_sesion == id_sesion,
+                                     SesionWhatsApp.id_usuario == usuario.id_usuario)
+    )
+    sesion = res.scalar_one_or_none()
+    if not sesion:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    return sesion
+
+
+async def _mensaje_del_usuario(db: AsyncSession, id_mensaje: uuid.UUID, usuario: Usuario) -> MensajeProgramado:
+    res = await db.execute(
+        select(MensajeProgramado).where(MensajeProgramado.id_mensaje == id_mensaje,
+                                        MensajeProgramado.id_usuario == usuario.id_usuario)
+    )
+    mensaje = res.scalar_one_or_none()
+    if not mensaje:
+        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
+    return mensaje
+
+
 @router.post("/", response_model=MensajeProgramadoRead, status_code=status.HTTP_201_CREATED)
 async def programar_mensaje(
     payload: MensajeProgramadoCreate,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
-    res = await db.execute(
-        select(SesionWhatsApp).where(SesionWhatsApp.id_sesion == payload.id_sesion)
-    )
-    if not res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
 
-    mensaje = MensajeProgramado(**payload.model_dump(exclude={'forzar'}))
+    datos = payload.model_dump(exclude={'forzar'})
+    ahora = datetime.now(timezone.utc)
+    if payload.forzar and datos["fecha_hora_disparo"] <= ahora:
+        # "Enviar ahora": se programa para este instante; si conservara la hora pasada, el programador
+        # la vería fuera de la tolerancia de retraso y la marcaría "vencida" en vez de enviarla.
+        datos["fecha_hora_disparo"] = ahora
+    # El mensaje es del USUARIO (no de la sesión) y recuerda con qué número se programó: si la sesión se
+    # borra y se vuelve a vincular el mismo número, se reasigna solo.
+    mensaje = MensajeProgramado(**datos, id_usuario=usuario.id_usuario, numero_origen=sesion.numero_telefono)
     db.add(mensaje)
     await db.commit()
     await db.refresh(mensaje)
@@ -38,9 +69,10 @@ async def programar_mensaje(
 @router.get("/stats")
 async def stats_mensajes(
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     res = await db.execute(select(MensajeProgramado.estado_envio, func.count())
+                           .where(MensajeProgramado.id_usuario == usuario.id_usuario)
                            .group_by(MensajeProgramado.estado_envio))
     conteos = dict(res.all())
     enviados = conteos.get("enviado", 0)
@@ -51,6 +83,7 @@ async def stats_mensajes(
         "enviados":      enviados,
         "fallidos":      fallidos,
         "cancelados":    conteos.get("cancelado", 0),
+        "vencidos":      conteos.get("vencido", 0),
         "total":         sum(conteos.values()),
         "tasa_exito":    round(enviados / terminados * 100, 1) if terminados else None,
     }
@@ -60,7 +93,7 @@ async def stats_mensajes(
 async def historial_mensajes(
     dias: int = Query(default=14, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     """Agrega mensajes enviados/fallidos por día para el gráfico de actividad."""
     desde = datetime.now(timezone.utc) - timedelta(days=dias)
@@ -72,11 +105,12 @@ async def historial_mensajes(
                 COUNT(*) FILTER (WHERE estado_envio = 'fallido')  AS fallidos
             FROM mensajes_programados
             WHERE fecha_hora_disparo >= :desde
+              AND id_usuario = :uid
               AND estado_envio IN ('enviado', 'fallido')
             GROUP BY fecha
             ORDER BY fecha ASC
         """),
-        {"desde": desde},
+        {"desde": desde, "uid": usuario.id_usuario},
     )
     return [{"fecha": str(r.fecha), "enviados": r.enviados, "fallidos": r.fallidos}
             for r in res.fetchall()]
@@ -86,12 +120,13 @@ async def historial_mensajes(
 async def proximos_mensajes(
     limite: int = Query(default=5, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     """Próximos mensajes programados (para el panel del dashboard)."""
     res = await db.execute(
         select(MensajeProgramado)
-        .where(MensajeProgramado.estado_envio == "programado")
+        .where(MensajeProgramado.id_usuario == usuario.id_usuario,
+               MensajeProgramado.estado_envio == "programado")
         .order_by(MensajeProgramado.fecha_hora_disparo.asc())
         .limit(limite)
     )
@@ -102,29 +137,71 @@ async def proximos_mensajes(
 async def mensajes_recientes(
     limite: int = Query(default=5, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     """Últimos mensajes enviados o fallidos (para el panel del dashboard)."""
     res = await db.execute(
         select(MensajeProgramado)
-        .where(MensajeProgramado.estado_envio.in_(["enviado", "fallido"]))
+        .where(MensajeProgramado.id_usuario == usuario.id_usuario,
+               MensajeProgramado.estado_envio.in_(["enviado", "fallido"]))
         .order_by(MensajeProgramado.fecha_hora_disparo.desc())
         .limit(limite)
     )
     return res.scalars().all()
 
 
+@router.get("/sin-sesion/conteo")
+async def conteo_sin_sesion(
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    """Mensajes del usuario que no tienen sesión (su número se eliminó). Los 'programados' esperan:
+    si se vuelve a vincular el mismo número se reasignan solos; si no, pasan a vencidos."""
+    res = await db.execute(
+        select(MensajeProgramado.estado_envio, func.count())
+        .where(MensajeProgramado.id_usuario == usuario.id_usuario, MensajeProgramado.id_sesion.is_(None))
+        .group_by(MensajeProgramado.estado_envio)
+    )
+    c = dict(res.all())
+    return {"programados": c.get("programado", 0), "vencidos": c.get("vencido", 0), "total": sum(c.values())}
+
+
+@router.post("/reasignar-sin-sesion")
+async def reasignar_todos_sin_sesion(
+    payload: ReasignarRequest,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_admin),
+):
+    """Asigna a una sesión todos los mensajes programados que quedaron sin sesión (conservan su hora)."""
+    sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
+    res = await db.execute(
+        update(MensajeProgramado)
+        .where(MensajeProgramado.id_usuario == usuario.id_usuario,
+               MensajeProgramado.id_sesion.is_(None),
+               MensajeProgramado.estado_envio == "programado")
+        .values(id_sesion=sesion.id_sesion, numero_origen=sesion.numero_telefono)
+    )
+    await db.commit()
+    logger.info("Reasignados %d mensajes sin sesión a '%s'", res.rowcount, sesion.instancia_evolution)
+    return {"reasignados": res.rowcount}
+
+
 @router.get("/", response_model=list[MensajeProgramadoRead])
 async def listar_mensajes(
     estado: str | None = None,
+    sin_sesion: bool = False,
     limit: int = 20,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
-    q = select(MensajeProgramado).order_by(MensajeProgramado.fecha_hora_disparo.desc())
+    q = (select(MensajeProgramado)
+         .where(MensajeProgramado.id_usuario == usuario.id_usuario)
+         .order_by(MensajeProgramado.fecha_hora_disparo.desc()))
     if estado:
         q = q.where(MensajeProgramado.estado_envio == estado)
+    if sin_sesion:
+        q = q.where(MensajeProgramado.id_sesion.is_(None))
     q = q.limit(limit).offset(offset)
     res = await db.execute(q)
     return res.scalars().all()
@@ -134,18 +211,33 @@ async def listar_mensajes(
 async def cancelar_mensaje(
     id_mensaje: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
-    res = await db.execute(
-        select(MensajeProgramado).where(MensajeProgramado.id_mensaje == id_mensaje)
-    )
-    mensaje = res.scalar_one_or_none()
-    if not mensaje:
-        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
-    if mensaje.estado_envio in ("enviado", "enviando"):
+    mensaje = await _mensaje_del_usuario(db, id_mensaje, usuario)
+    if mensaje.estado_envio in ("enviado", "enviando", "en_cola"):
         raise HTTPException(status_code=409,
                             detail=f"No se puede cancelar un mensaje en estado '{mensaje.estado_envio}'")
     mensaje.estado_envio = "cancelado"
+    await db.commit()
+    await db.refresh(mensaje)
+    return mensaje
+
+
+@router.patch("/{id_mensaje}/reasignar", response_model=MensajeProgramadoRead)
+async def reasignar_mensaje(
+    id_mensaje: uuid.UUID,
+    payload: ReasignarRequest,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_admin),
+):
+    """Asigna una sesión a un mensaje programado que quedó sin sesión (conserva su hora)."""
+    mensaje = await _mensaje_del_usuario(db, id_mensaje, usuario)
+    if mensaje.estado_envio != "programado":
+        raise HTTPException(status_code=409, detail="Solo se pueden reasignar mensajes programados; "
+                                                    "los vencidos se reprograman")
+    sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
+    mensaje.id_sesion = sesion.id_sesion
+    mensaje.numero_origen = sesion.numero_telefono
     await db.commit()
     await db.refresh(mensaje)
     return mensaje
@@ -156,14 +248,9 @@ async def editar_mensaje(
     id_mensaje: uuid.UUID,
     payload: MensajeProgramadoUpdate,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
-    res = await db.execute(
-        select(MensajeProgramado).where(MensajeProgramado.id_mensaje == id_mensaje)
-    )
-    mensaje = res.scalar_one_or_none()
-    if not mensaje:
-        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
+    mensaje = await _mensaje_del_usuario(db, id_mensaje, usuario)
     if mensaje.estado_envio != "programado":
         raise HTTPException(status_code=409,
                             detail=f"Solo se pueden editar mensajes con estado 'programado'")
@@ -178,17 +265,12 @@ async def editar_mensaje(
 async def eliminar_mensaje(
     id_mensaje: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
-    res = await db.execute(
-        select(MensajeProgramado).where(MensajeProgramado.id_mensaje == id_mensaje)
-    )
-    mensaje = res.scalar_one_or_none()
-    if not mensaje:
-        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
-    if mensaje.estado_envio == "enviando":
+    mensaje = await _mensaje_del_usuario(db, id_mensaje, usuario)
+    if mensaje.estado_envio in ("enviando", "en_cola"):
         raise HTTPException(status_code=409,
-                            detail="No se puede eliminar un mensaje en estado 'enviando'")
+                            detail=f"No se puede eliminar un mensaje en estado '{mensaje.estado_envio}'")
     await db.delete(mensaje)
     await db.commit()
 
@@ -197,12 +279,6 @@ async def eliminar_mensaje(
 async def obtener_mensaje(
     id_mensaje: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
-    res = await db.execute(
-        select(MensajeProgramado).where(MensajeProgramado.id_mensaje == id_mensaje)
-    )
-    mensaje = res.scalar_one_or_none()
-    if not mensaje:
-        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
-    return mensaje
+    return await _mensaje_del_usuario(db, id_mensaje, usuario)

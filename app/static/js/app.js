@@ -298,9 +298,52 @@ function _ecuadorNow() {
 
 // Pre-rellena el campo inp-fecha con la hora actual de Ecuador
 function _prefillFecha() {
-  const inp = document.getElementById('inp-fecha');
-  if (!inp) return;
-  inp.value = _ecuadorNow();
+  fijarFecha('inp-fecha', _ecuadorNow());
+}
+
+// ---- Selector de fecha y hora ----
+// Computador (puntero fino): flatpickr en español, tema oscuro, 12 h con a. m./p. m. y botón "✓ Listo"
+// que cierra el calendario. Móvil: se mantiene el selector nativo del teléfono (ya trae "Aceptar").
+// El valor del campo sigue siendo "YYYY-MM-DDTHH:MM" (igual que datetime-local), así el resto del código no cambia.
+const _CAMPOS_FECHA = ['inp-fecha', 'edit-fecha'];
+
+function _esEscritorio() {
+  return typeof flatpickr === 'function' && window.matchMedia
+    && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+}
+
+function iniciarSelectoresFecha() {
+  if (!_esEscritorio()) return;
+  const locale = Object.assign({}, flatpickr.l10ns.es, { firstDayOfWeek: 1, amPM: ['a. m.', 'p. m.'] });
+  _CAMPOS_FECHA.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el || el._flatpickr) return;
+    el.type = 'text';                               // flatpickr no convive con datetime-local
+    flatpickr(el, {
+      locale,
+      enableTime: true,
+      time_24hr: false,
+      minuteIncrement: 1,
+      dateFormat: 'Y-m-d\\TH:i',
+      altInput: true,
+      altFormat: 'd/m/Y h:i K',
+      altInputClass: 'form-control',
+      allowInput: false,
+      minDate: _ecuadorNow(),                       // no se permiten fechas pasadas
+      onOpen: (_sel, _str, inst) => inst.set('minDate', _ecuadorNow()),
+      plugins: [new confirmDatePlugin({ confirmText: '✓ Listo', confirmIcon: '', showAlways: true, theme: 'dark' })],
+    });
+  });
+}
+
+// Asigna una fecha ("YYYY-MM-DDTHH:MM") al campo, con o sin flatpickr
+function fijarFecha(id, valor) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const fp = el._flatpickr;
+  if (!fp) { el.value = valor; return; }
+  if (valor && valor < _ecuadorNow()) fp.set('minDate', valor);   // editar un mensaje cuya hora ya pasó
+  fp.setDate(valor, false);
 }
 
 function showAlert(containerId, msg, type = 'info') {
@@ -396,6 +439,8 @@ async function loadDashboard() {
   try {
     const d = await apiFetch('/dashboard/resumen');
     _pintarSaludoInicio(d.perfil);
+    _pintarAvisoDesconexion(d.aviso_desconexion);
+    _pintarAvisoSinSesion(d.aviso_sin_sesion);
     _pintarSesionInicio(d.sesiones);
     _pintarTarjetasInicio(d.tarjetas);
     _pintarProximosInicio(d);
@@ -440,6 +485,34 @@ function _pintarTarjetasInicio(t) {
   const f = document.getElementById('num-fallidos');
   f.textContent = t.fallidos_mes;
   f.classList.toggle('hay', t.fallidos_mes > 0);
+  // los vencidos (hay que reprogramarlos) tienen su propia tarjeta, solo si existen
+  document.getElementById('num-vencidos').textContent = t.vencidos;
+  document.getElementById('tarjeta-vencidos').style.display = t.vencidos > 0 ? '' : 'none';
+  document.getElementById('inicio-tarjetas').classList.toggle('con-vencidos', t.vencidos > 0);
+}
+
+function _pintarAvisoSinSesion(aviso) {
+  const el = document.getElementById('inicio-aviso-sin-sesion');
+  if (!el) return;
+  if (!aviso || !aviso.programados) { el.innerHTML = ''; return; }
+  const n = aviso.programados;
+  el.innerHTML = `
+    <div class="aviso-desconexion aviso-info" role="status">
+      <span class="aviso-txt">📌 <strong>${n} ${n === 1 ? 'mensaje programado no tiene' : 'mensajes programados no tienen'} sesión de WhatsApp</strong> (se eliminó su número). Si vuelves a vincular el mismo número se reasignan solos.</span>
+      <button type="button" class="btn btn-sm btn-primary" onclick="irAMensajes('sin_sesion')">Ver mensajes</button>
+    </div>`;
+}
+
+function _pintarAvisoDesconexion(aviso) {
+  const el = document.getElementById('inicio-aviso');
+  if (!el) return;
+  if (!aviso || !aviso.pendientes) { el.innerHTML = ''; return; }
+  const n = aviso.pendientes;
+  el.innerHTML = `
+    <div class="aviso-desconexion" role="alert">
+      <span class="aviso-txt">⚠️ Tu WhatsApp está desconectado: <strong>${n} ${n === 1 ? 'mensaje pendiente no se enviará' : 'mensajes pendientes no se enviarán'}</strong> hasta que lo vuelvas a vincular</span>
+      <button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>
+    </div>`;
 }
 
 function _pintarProximosInicio(d) {
@@ -461,7 +534,7 @@ function _pintarProximosInicio(d) {
       <span class="envio-ico" title="${m.tipo_media || 'texto'}">${_ICONO_TIPO[m.tipo_media] || '💬'}</span>
       <div class="envio-info">
         <div class="envio-destino">${esc(m.destino)}</div>
-        <div class="envio-fecha">${fmtDate(m.fecha_hora_disparo)}${m.recurrente ? ' · 🔁' : ''}</div>
+        <div class="envio-fecha">${fmtDate(m.fecha_hora_disparo)}${m.recurrente ? ' · 🔁' : ''}${m.sin_sesion ? '<span class="sin-sesion-txt">· sin sesión</span>' : ''}</div>
       </div>
       <span class="punto ${m.estado === 'enviando' ? 'punto-azul' : 'punto-naranja'}" title="${m.estado === 'enviando' ? 'Enviando' : 'Pendiente'}"></span>
     </div>`).join('');
@@ -507,31 +580,31 @@ function renderPanelSesion() {
 
   const tarjetas = todasLasSesiones.map(s => `
     <div class="card" id="card-sesion-${s.id_sesion}">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div class="sesion-perfil" style="flex:1">
-         ${_avatarHTML(s.id_sesion, s.perfil_foto_en, s.perfil_nombre, 'lg')}
-         <div style="min-width:0">
+      <div class="sesion-perfil">
+        ${_avatarHTML(s.id_sesion, s.perfil_foto_en, s.perfil_nombre, 'lg')}
+        <div class="sesion-datos">
           ${s.perfil_nombre ? `<div class="sesion-perfil-nombre">${String(s.perfil_nombre).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</div>` : ''}
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="text-mono">${_nombreSesion(s)}</span>
+          <div class="sesion-numero-fila">
+            <span class="text-mono sesion-numero">${_nombreSesion(s)}</span>
             <span class="badge ${badgeClass(s.estado_conexion)}">${labels[s.estado_conexion] || s.estado_conexion}</span>
           </div>
           ${!s.numero_telefono ? `<div class="text-muted" style="font-size:.72rem;margin-top:3px">Escaneando QR…</div>` : ''}
-         </div>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
-          <button class="btn btn-sm btn-secondary" onclick="verificarEstado('${s.id_sesion}')">🔄 Verificar</button>
-          ${s.estado_conexion === 'conectado' ? `<button class="btn btn-sm btn-secondary" onclick="cargarGruposSesion('${s.id_sesion}')">🔃 Grupos</button>` : ''}
-          <button class="btn btn-sm btn-danger" onclick="eliminarSesion('${s.id_sesion}')">Eliminar</button>
-        </div>
+      </div>
+      <div class="sesion-acciones">
+        ${s.estado_conexion !== 'conectado' ? `<button class="btn btn-sm btn-primary" onclick="mostrarQR('${s.id_sesion}')">📱 QR</button>` : ''}
+        <button class="btn btn-sm btn-secondary" onclick="verificarEstado('${s.id_sesion}')">🔄 Verificar</button>
+        ${s.estado_conexion === 'conectado' ? `<button class="btn btn-sm btn-secondary" onclick="cargarGruposSesion('${s.id_sesion}')">🔃 Grupos</button>` : ''}
+        <button class="btn btn-sm btn-danger" onclick="desvincularSesion('${s.id_sesion}')">Desvincular</button>
       </div>
       <div id="qr-container-${s.id_sesion}" style="display:none;margin-top:16px"></div>
       <div id="grupos-container-${s.id_sesion}" style="display:none;margin-top:16px"></div>
     </div>`).join('');
 
+  const nota = todasLasSesiones.length ? `<p class="nota-sesion">${NOTA_DESVINCULAR}</p>` : '';
   el.innerHTML = `
     ${tarjetas}
+    ${nota}
     <div class="card">
       <div class="card-title">Añadir cuenta de WhatsApp</div>
       <div id="alert-sesion"></div>
@@ -916,14 +989,25 @@ function _iniciarPollingPairing(id_sesion) {
   _pairingPolls[id_sesion] = { timer, startTime };
 }
 
-async function eliminarSesion(id_sesion) {
-  if (!confirm('¿Eliminar esta sesión y todos sus mensajes programados?')) return;
+const NOTA_DESVINCULAR = "Puedes salir de Enviafast desde cualquier dispositivo y tus mensajes se enviarán igual. "
+  + "Pero si desvinculas tu WhatsApp (con 'Desvincular' aquí, o desde WhatsApp → Dispositivos vinculados en tu teléfono), "
+  + "tus mensajes programados quedarán en pausa hasta que lo vuelvas a vincular.";
+
+async function desvincularSesion(id_sesion) {
+  let n = 0;
+  try { n = (await apiFetch(`/sesiones/${id_sesion}/pendientes`)).pendientes || 0; } catch { /* sin conteo: confirma sin detalle */ }
+  const aviso = n > 0
+    ? (n === 1 ? 'Este número tiene 1 mensaje programado; quedará en pausa y no se enviará.'
+               : `Este número tiene ${n} mensajes programados; quedarán en pausa y no se enviarán.`)
+    : '';
+  const advertencia = 'Tus mensajes programados quedarán en pausa hasta que vuelvas a vincular este número.';
+  if (!confirm('Desvincular este número\n\n' + (aviso ? aviso + '\n\n' : '') + advertencia)) return;
   try {
     await apiFetch(`/sesiones/${id_sesion}`, { method: 'DELETE' });
     await cargarSesionActiva();
     renderPanelSesion();
   } catch (e) {
-    alert('Error al eliminar: ' + e.message);
+    alert('Error al desvincular: ' + e.message);
   }
 }
 
@@ -1819,7 +1903,9 @@ async function loadMensajes() {
 
   try {
     const params = new URLSearchParams({ limit: MSG_POR_PAG, offset: (msgPagina - 1) * MSG_POR_PAG });
-    if (msgFiltro !== 'todos') params.set('estado', msgFiltro);
+    if (msgFiltro === 'sin_sesion') params.set('sin_sesion', 'true');
+    else if (msgFiltro !== 'todos') params.set('estado', msgFiltro);
+    _pintarBannerSinSesion();
     const lista = await apiFetch('/mensajes/?' + params);
     if (!lista.length) {
       el.innerHTML = '';
@@ -1831,28 +1917,37 @@ async function loadMensajes() {
     el.innerHTML = lista.map(m => {
       _mensajesCache[m.id_mensaje] = m;
       const estadoClass = {
-        programado: 'badge-orange', enviando: 'badge-info',
-        enviado: 'badge-green', fallido: 'badge-red', cancelado: 'badge-muted',
+        programado: 'badge-orange', en_cola: 'badge-info', enviando: 'badge-info',
+        enviado: 'badge-green', fallido: 'badge-red', cancelado: 'badge-muted', vencido: 'badge-vencido',
       }[m.estado_envio] || 'badge-muted';
+      const estadoTxt = { en_cola: 'en cola' }[m.estado_envio] || m.estado_envio;
+      const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
       return `<tr>
-        <td class="text-mono" style="font-size:.75rem">${m.id_mensaje.split('-')[0]}…</td>
-        <td>${m.id_grupo}</td>
-        <td>
+        <td class="text-mono col-id" style="font-size:.75rem">${m.id_mensaje.split('-')[0]}…</td>
+        <td data-label="Destino">${m.id_grupo}</td>
+        <td data-label="Mensaje">
           ${m.texto_mensaje ? m.texto_mensaje.substring(0, 50) + (m.texto_mensaje.length > 50 ? '…' : '') : ''}
           ${m.tipo_media ? `<span class="badge badge-info" style="font-size:.7rem">${ICON_MAP[m.tipo_media] || '📎'} ${m.tipo_media}</span>` : (!m.texto_mensaje ? '<span class="text-muted">—</span>' : '')}
         </td>
-        <td>${fmtDate(m.fecha_hora_disparo)}</td>
-        <td>
-          <span class="badge ${estadoClass}">${m.estado_envio}</span>
+        <td data-label="Programado para">${fmtDate(m.fecha_hora_disparo)}</td>
+        <td data-label="Estado">
+          <span class="badge ${estadoClass}">${estadoTxt}</span>${!m.id_sesion && ['programado', 'vencido'].includes(m.estado_envio) ? '<span class="badge badge-sin-sesion" title="Su número se eliminó. Si vuelves a vincular el mismo número se reasigna solo.">sin sesión</span>' : ''}
+          ${m.estado_envio === 'vencido' && m.error_envio ? `<span class="motivo-vencido">${esc(m.error_envio)}</span>` : ''}
           ${m.recurrencia && m.recurrencia !== 'none' ? `<span class="badge badge-info" style="font-size:.7rem;margin-left:4px" title="Recurrencia: ${m.recurrencia}">🔁 ${m.recurrencia === 'daily' ? 'Diario' : m.recurrencia === 'weekly' ? 'Semanal' : 'Mensual'}</span>` : ''}
         </td>
-        <td style="white-space:nowrap">
+        <td class="col-acciones" style="white-space:nowrap">
           ${currentUser?.rol === 'admin' ? `
+            ${m.estado_envio === 'programado' && !m.id_sesion ? `
+              <button class="btn btn-sm btn-primary" onclick="reasignarMensaje('${m.id_mensaje}')" style="margin-right:4px">Reasignar</button>
+            ` : ''}
             ${m.estado_envio === 'programado' ? `
               <button class="btn btn-sm btn-secondary" onclick="abrirModalEditar('${m.id_mensaje}')" style="margin-right:4px">Editar</button>
               <button class="btn btn-sm btn-danger" onclick="cancelarMensaje('${m.id_mensaje}')" style="margin-right:4px">Cancelar</button>
             ` : ''}
-            ${['enviado','fallido','cancelado'].includes(m.estado_envio) ? `
+            ${m.estado_envio === 'vencido' ? `
+              <button class="btn btn-sm btn-primary" onclick="reprogramarMensaje('${m.id_mensaje}')" style="margin-right:4px">Reprogramar</button>
+            ` : ''}
+            ${['enviado','fallido','cancelado','vencido'].includes(m.estado_envio) ? `
               <button class="btn btn-sm btn-danger" onclick="eliminarMensaje('${m.id_mensaje}')">Eliminar</button>
             ` : ''}
           ` : '—'}
@@ -1871,6 +1966,82 @@ function filtrarMensajes(estado) {
   const btn = document.querySelector(`[data-filter="${estado}"]`);
   if (btn) btn.classList.add('active');
   loadMensajes();
+}
+
+// ---- Mensajes sin sesión: aviso, reasignar uno o todos ----
+async function _pintarBannerSinSesion() {
+  const el = document.getElementById('mensajes-huerfanos');
+  if (!el) return;
+  try {
+    const c = await apiFetch('/mensajes/sin-sesion/conteo');
+    if (!c.programados) { el.innerHTML = ''; return; }
+    await cargarSesionActiva();
+    const n = c.programados;
+    const destino = sesionActiva
+      ? `<button type="button" class="btn btn-sm btn-primary" onclick="reasignarTodosSinSesion()">Reasignar ${n === 1 ? 'el mensaje' : 'todos'} a ${_nombreSesion(sesionActiva)}</button>`
+      : `<button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>`;
+    el.innerHTML = `
+      <div class="aviso-desconexion aviso-info" role="status">
+        <span class="aviso-txt">📌 Tienes <strong>${n} ${n === 1 ? 'mensaje programado' : 'mensajes programados'} sin sesión de WhatsApp</strong> (se eliminó su número). Si vuelves a vincular el mismo número se reasignan solos; si no, pasan a vencidos cuando llegue su hora.</span>
+        ${destino}
+      </div>`;
+  } catch { el.innerHTML = ''; }
+}
+
+async function reasignarMensaje(id) {
+  await cargarSesionActiva();
+  if (!sesionActiva) { alert('Primero vincula un número en Sesión.'); return; }
+  try {
+    await apiFetch(`/mensajes/${id}/reasignar`, { method: 'PATCH', body: JSON.stringify({ id_sesion: sesionActiva.id_sesion }) });
+    loadMensajes();
+  } catch (e) { alert('No se pudo reasignar: ' + e.message); }
+}
+
+async function reasignarTodosSinSesion() {
+  if (!sesionActiva) return;
+  try {
+    const r = await apiFetch('/mensajes/reasignar-sin-sesion', { method: 'POST', body: JSON.stringify({ id_sesion: sesionActiva.id_sesion }) });
+    alert(`${r.reasignados} mensaje(s) reasignado(s) a ${_nombreSesion(sesionActiva)}.`);
+    loadMensajes();
+  } catch (e) { alert('No se pudo reasignar: ' + e.message); }
+}
+
+// "Reprogramar" un mensaje vencido: abre Programar con sus datos cargados (el usuario elige la nueva hora)
+async function reprogramarMensaje(id) {
+  const m = _mensajesCache[id];
+  if (!m) return;
+  navigate('programar');
+  while (_cargandoGrupos) await new Promise(r => setTimeout(r, 100));   // espera a que cargue la lista de grupos
+
+  const esGrupo = (m.id_grupo || '').endsWith('@g.us');
+  const radio = document.querySelector(`input[name="tipo-destino"][value="${esGrupo ? 'grupo' : 'personal'}"]`);
+  if (radio) { radio.checked = true; toggleDestino(radio); }
+  if (esGrupo) {
+    const g = gruposCache.find(x => x.id === m.id_grupo);
+    seleccionarGrupo(m.id_grupo, g ? (g.subject || g.id) : m.id_grupo);   // también lo verifica
+  } else {
+    document.getElementById('inp-numero').value = (m.id_grupo || '').split('@')[0];
+  }
+  document.getElementById('txt-mensaje').value = m.texto_mensaje || '';
+  document.getElementById('char-count').textContent = (m.texto_mensaje || '').length + ' / 4096';
+  const rec = document.getElementById('sel-recurrencia');
+  if (rec) rec.value = m.recurrencia || 'none';
+
+  if (m.url_media) {      // el adjunto ya está en el servidor: se reutiliza
+    document.getElementById('hid-url-media').value = m.url_media;
+    document.getElementById('hid-tipo-media').value = m.tipo_media || '';
+    document.getElementById('upload-placeholder').style.display = 'none';
+    document.getElementById('upload-preview').style.display = '';
+    document.getElementById('upload-nombre').textContent = decodeURIComponent(m.url_media.split('/').pop());
+    document.getElementById('upload-tipo').textContent = `${ICON_MAP[m.tipo_media] || '📎'} ${m.tipo_media || ''}`;
+    document.getElementById('upload-icon').textContent = ICON_MAP[m.tipo_media] || '📎';
+  }
+  // hora sugerida: dentro de 10 minutos (hora de Ecuador); el usuario la ajusta
+  const sugerida = new Date(Date.now() + 10 * 60000);
+  fijarFecha('inp-fecha', new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'America/Guayaquil', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(sugerida).replace(' ', 'T'));
+  showAlert('alert-programar', 'Datos del mensaje vencido cargados. Elige la nueva fecha y hora y pulsa Programar.', 'info');
 }
 
 async function cancelarMensaje(id) {
@@ -1930,7 +2101,7 @@ function abrirModalEditar(id) {
     const d = new Date(m.fecha_hora_disparo);
     const offset = -5 * 60; // Ecuador UTC-5
     const local = new Date(d.getTime() + (offset - d.getTimezoneOffset()) * 60000);
-    document.getElementById('edit-fecha').value = local.toISOString().slice(0, 16);
+    fijarFecha('edit-fecha', local.toISOString().slice(0, 16));
   }
 
   const selRecurrencia = document.getElementById('edit-recurrencia');
@@ -2125,7 +2296,13 @@ async function eliminarPlantilla(id) {
 document.addEventListener('DOMContentLoaded', async () => {
   // Botones de navegación
   $$('[data-page]').forEach(btn => {
-    btn.addEventListener('click', () => navigate(btn.dataset.page));
+    btn.addEventListener('click', () => {
+      if (btn.dataset.page === 'mensajes') {      // desde el menú, Mensajes empieza sin filtro (las tarjetas del Inicio sí filtran)
+        msgFiltro = 'todos'; msgPagina = 1;
+        $$('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'todos'));
+      }
+      navigate(btn.dataset.page);
+    });
   });
 
   // Form de programar
@@ -2137,7 +2314,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', () => filtrarMensajes(btn.dataset.filter));
   });
 
-  // Pre-fill fecha con hora actual Ecuador (UTC-5), funciona en Android/iOS/desktop
+  // Selector de fecha (flatpickr en computador) y pre-fill con la hora actual de Ecuador (UTC-5)
+  iniciarSelectoresFecha();
   _prefillFecha();
 
   // Cerrar modal editar al hacer clic en el fondo
