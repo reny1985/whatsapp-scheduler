@@ -299,6 +299,30 @@ function _ecuadorNow() {
 // Pre-rellena el campo inp-fecha con la hora actual de Ecuador
 function _prefillFecha() {
   fijarFecha('inp-fecha', _ecuadorNow());
+  _actualizarMinFecha();
+  _actualizarAvisoHoraPasada();
+}
+
+// ---- Hora ya pasada ----
+// El selector nativo del móvil permite elegir una hora que ya pasó. Se pone `min` y, si aun así el valor
+// quedó en el pasado, se avisa en amarillo debajo del campo. (El backend acepta hasta 2 min de atraso; más
+// de eso exige "Enviar ahora".)
+const HORA_PASADA_TOLERANCIA_MIN = 2;
+
+function _actualizarMinFecha() {
+  const el = document.getElementById('inp-fecha');
+  if (el && el.type === 'datetime-local') el.min = _ecuadorNow();
+}
+
+function _horaYaPaso(valor) {
+  return !!valor && valor < _ecuadorNow();      // "YYYY-MM-DDTHH:MM" de Ecuador: la comparación de texto es válida
+}
+
+function _actualizarAvisoHoraPasada() {
+  const aviso = document.getElementById('aviso-hora-pasada');
+  const el = document.getElementById('inp-fecha');
+  if (!aviso || !el) return;
+  aviso.style.display = _horaYaPaso(el.value) ? '' : 'none';
 }
 
 // ---- Selector de fecha y hora ----
@@ -471,11 +495,31 @@ function _pintarSesionInicio(sesiones) {
     return;
   }
   el.innerHTML = `<div class="card-title">WhatsApp</div>` + sesiones.map(s => `
-    <div class="estado-fila">
-      <span class="estado-numero">${s.numero ? '+' + s.numero : 'Número sin vincular'}</span>
-      <span class="estado-texto"><span class="punto ${s.conectado ? 'punto-verde' : 'punto-rojo'}"></span>${s.conectado ? 'Conectado' : 'Desconectado'}</span>
-      ${s.conectado ? '' : `<button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>`}
+    <div class="estado-sesion">
+      <div class="estado-fila">
+        <span class="estado-numero">${s.numero ? '+' + s.numero : 'Número sin vincular'}</span>
+        <span class="estado-texto"><span class="punto ${s.conectado ? 'punto-verde' : 'punto-rojo'}"></span>${s.conectado ? 'Conectado' : 'Desconectado'}</span>
+        ${s.conectado ? '' : `<button type="button" class="btn btn-sm btn-primary" onclick="navigate('sesion')">Ir a Sesión</button>`}
+      </div>
+      ${s.semaforo ? _semaforoHTML(s.semaforo) : ''}
     </div>`).join('');
+}
+
+// Semáforo anti-spam del número: color, cuántos envíos lleva hoy y una frase clara
+function _semaforoHTML(sm) {
+  const punto = { verde: 'punto-verde', amarillo: 'punto-naranja', rojo: 'punto-rojo' }[sm.color] || 'punto-verde';
+  const titulo = { verde: 'Envíos de hoy: ritmo seguro', amarillo: 'Envíos de hoy: ritmo alto', rojo: 'Envíos de hoy: ritmo muy alto' }[sm.color];
+  const detalle = `${sm.individuales} a personas${sm.grupos ? ` · ${sm.grupos} a grupos` : ''}`;
+  const avisos = (sm.avisos || []).map(a => `<div class="semaforo-aviso">⚠️ ${a}</div>`).join('');
+  return `
+    <div class="semaforo semaforo-${sm.color}" title="Umbrales de hoy: amarillo desde ${sm.umbral_amarillo}, rojo desde ${sm.umbral_rojo}">
+      <span class="punto ${punto}"></span>
+      <div>
+        <div class="semaforo-titulo">${titulo} <span class="semaforo-detalle">(${detalle})</span></div>
+        <div class="semaforo-frase">${sm.frase}</div>
+        ${avisos}
+      </div>
+    </div>`;
 }
 
 function _pintarTarjetasInicio(t) {
@@ -1175,6 +1219,7 @@ async function loadGrupos(forzar = false) {
   } finally {
     _cargandoGrupos = false;
     if (btn) { btn.disabled = false; btn.textContent = '↺ Recargar'; }
+    _programarAvisoEscalonado();     // ya hay sesión elegida: actualiza el aviso de mensajes cercanos
   }
 }
 
@@ -1782,6 +1827,38 @@ function initUploadZone() {
   });
 }
 
+function _hhmmEcuador(iso) {
+  return new Intl.DateTimeFormat('es-EC', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Guayaquil' })
+    .format(new Date(iso));
+}
+
+// ---- Aviso al programar: "Este número ya tiene N mensajes a las HH:MM; se enviarán aproximadamente entre …" ----
+let _avisoTimer = null;
+let _ultimoAvisoEscalonado = '';
+
+function _programarAvisoEscalonado() {
+  clearTimeout(_avisoTimer);
+  _avisoTimer = setTimeout(actualizarAvisoEscalonado, 400);
+}
+
+async function actualizarAvisoEscalonado() {
+  const el = document.getElementById('aviso-escalonado');
+  if (!el) return;
+  const idSesion = document.getElementById('hid-sesion')?.value || sesionActiva?.id_sesion;
+  const fecha = document.getElementById('inp-fecha')?.value;
+  const tipo = document.querySelector('input[name="tipo-destino"]:checked')?.value || 'grupo';
+  _ultimoAvisoEscalonado = '';
+  if (!idSesion || !fecha) { el.style.display = 'none'; return; }
+  try {
+    const q = new URLSearchParams({ id_sesion: idSesion, fecha_hora: fecha + ':00-05:00', grupo: String(tipo !== 'personal') });
+    const d = await apiFetch('/mensajes/estimacion?' + q);
+    if (!d.n) { el.style.display = 'none'; return; }
+    _ultimoAvisoEscalonado = d.mensaje;
+    el.textContent = '⏱️ ' + d.mensaje + (d.duplicadas ? ' Tus envíos de hoy son muchos: las pausas se duplicaron para proteger tu número.' : '');
+    el.style.display = '';
+  } catch { el.style.display = 'none'; }
+}
+
 async function programarMensaje(e) {
   e.preventDefault();
   const form = e.target;
@@ -1832,8 +1909,10 @@ async function programarMensaje(e) {
   let forzar = false;
   {
     const fechaElegida = new Date(fechaHora + ':00-05:00');
-    if (fechaElegida <= new Date()) {
-      const ok = confirm('La hora seleccionada ya pasó. ¿Enviar ahora?');
+    const pasadaMin = (Date.now() - fechaElegida.getTime()) / 60000;
+    if (pasadaMin > HORA_PASADA_TOLERANCIA_MIN) {
+      // pasó hace más de 2 min: hay que confirmar "Enviar ahora" (si fue hace menos, el backend la acepta y sale de inmediato)
+      const ok = confirm(`La hora seleccionada ya pasó (hace ${Math.floor(pasadaMin)} min). ¿Enviar ahora?`);
       if (!ok) return;
       forzar = true;
     }
@@ -1872,7 +1951,7 @@ async function programarMensaje(e) {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    showAlert('alert-programar', '✅ Mensaje programado correctamente', 'success');
+    showAlert('alert-programar', '✅ Mensaje programado correctamente' + (_ultimoAvisoEscalonado ? ' · ⏱️ ' + _ultimoAvisoEscalonado : ''), 'success');
     form.reset();
     _prefillFecha();
     limpiarAdjunto({ stopPropagation: () => {} });
@@ -1920,7 +1999,9 @@ async function loadMensajes() {
         programado: 'badge-orange', en_cola: 'badge-info', enviando: 'badge-info',
         enviado: 'badge-green', fallido: 'badge-red', cancelado: 'badge-muted', vencido: 'badge-vencido',
       }[m.estado_envio] || 'badge-muted';
-      const estadoTxt = { en_cola: 'en cola' }[m.estado_envio] || m.estado_envio;
+      const estadoTxt = m.estado_envio === 'en_cola'
+        ? (m.salida_estimada ? `En cola · sale aprox. ${_hhmmEcuador(m.salida_estimada)}` : 'en cola')
+        : m.estado_envio;
       const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
       return `<tr>
         <td class="text-mono col-id" style="font-size:.75rem">${m.id_mensaje.split('-')[0]}…</td>
@@ -2317,6 +2398,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Selector de fecha (flatpickr en computador) y pre-fill con la hora actual de Ecuador (UTC-5)
   iniciarSelectoresFecha();
   _prefillFecha();
+  document.getElementById('inp-fecha')?.addEventListener('change', _programarAvisoEscalonado);
+  ['change', 'input'].forEach(ev => document.getElementById('inp-fecha')?.addEventListener(ev, _actualizarAvisoHoraPasada));
+  document.getElementById('inp-fecha')?.addEventListener('focus', _actualizarMinFecha);
+  _actualizarMinFecha();
+  _actualizarAvisoHoraPasada();
+  setInterval(() => { _actualizarMinFecha(); _actualizarAvisoHoraPasada(); }, 30000);   // el reloj avanza mientras el formulario está abierto
+  $$('input[name="tipo-destino"]').forEach(r => r.addEventListener('change', _programarAvisoEscalonado));
+  document.getElementById('sel-sesion')?.addEventListener('change', _programarAvisoEscalonado);
 
   // Cerrar modal editar al hacer clic en el fondo
   document.getElementById('modal-editar')?.addEventListener('click', e => {

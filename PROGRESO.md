@@ -1,10 +1,15 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-14 (estado tras v1.0.7)
+Última actualización: 2026-10-15 (estado tras v1.0.8)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.7**, sobre `main`.
+**Production (`https://enviafast.net`) corre v1.0.8**, sobre `main`. 278 pruebas automáticas pasan.
+
+- **v1.0.8** — envío escalonado y protección del número:
+  - Un trabajador por sesión; pausas 20–45 s (individual) y 8–20 s (grupo), el doble en rojo; espera inicial 0–20 s descontando el ciclo; ciclo de 20 s; constantes en `app/envio_config.py`.
+  - Retoma la cola tras reinicio (latido en `estado_programador`, `enviado_en`); nunca reenvía un `enviando` huérfano.
+  - Aviso al programar, "En cola · sale aprox.", hora pasada en móvil, semáforo anti-spam, límites de peso por archivo y "escribiendo…" (`ENVIO_ESCRIBIENDO=1`, activo en production).
 
 - **v1.0.7** — mensajes vencidos, dueño por usuario, avisos y calendario:
   - **Tolerancia de retraso** (`TOLERANCIA_RETRASO_MIN = 5`, un solo lugar, `app/scheduler.py`) medida al TOMAR el mensaje, en dos fases: tomar (`en_cola` o `vencido` con su motivo) y enviar (todo lo que entró a la cola a tiempo se envía siempre). Estados nuevos `en_cola` y `vencido`; los vencidos se reprograman desde Mensajes. "Enviar ahora" se guarda como "ahora" y una serie recurrente no se corta si un envío vence.
@@ -63,7 +68,7 @@
 - Respaldos de production en `~/Desktop/Respaldos_Enviafast/` (se usa `pg_dump` 18 de Homebrew).
 
 ## Pendientes futuros (en orden de prioridad)
-1. **PRIORITARIO — v1.0.8 (antes de vender): envío escalonado.** Hoy los mensajes se envían en serie y sin pausa (~1,1–1,7 s cada uno), lo que se parece a un bot y arriesga el número. Agregar: (a) pausa aleatoria entre envíos a números individuales; (b) aviso "se enviarán entre HH:MM y HH:MM" al programar varios mensajes a la misma hora; (c) límites por hora y por día según el plan.
+1. ✅ **Hecho (v1.0.8): envío escalonado.** (Pendiente de ese ítem: límites por hora y por día según el plan.) Hoy los mensajes se envían en serie y sin pausa (~1,1–1,7 s cada uno), lo que se parece a un bot y arriesga el número. Agregar: (a) pausa aleatoria entre envíos a números individuales; (b) aviso "se enviarán entre HH:MM y HH:MM" al programar varios mensajes a la misma hora; (c) límites por hora y por día según el plan.
 2. **Seguridad — Evolution en un subdominio con HTTPS** (no la IP por HTTP): hoy se llama a `http://159.69.248.218`, y hay redes corporativas que la bloquean ("Web Page Blocked"). Incluye verificar la clave global.
 3. **Logo de Enviafast en los correos:** subir el archivo a `/static` y definir `EMAIL_LOGO_URL` (el lugar ya está preparado en el correo).
 4. Separar los datos por cliente (multiusuario), imprescindible antes de vender. (Avance en v1.0.7: los mensajes ya tienen `id_usuario`; faltan sesiones/plantillas por cliente y el registro de usuarios nuevos.)

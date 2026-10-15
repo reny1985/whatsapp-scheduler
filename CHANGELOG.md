@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.8 — 2026-10-15 — Envío escalonado y protección del número
+
+- **Envío escalonado por número**: un trabajador por sesión (las sesiones corren en paralelo, nunca dos colas de la misma sesión). Pausa aleatoria entre envíos: 20–45 s a números individuales y 8–20 s a grupos (el doble en semáforo rojo). Los mensajes de una sesión salen en orden de `fecha_hora_disparo`
+- **Espera inicial 0–20 s** antes del primero de cada cola, siempre después de su hora y descontando lo que ya esperó por el ciclo: el primero sale entre 0 y ~23 s después de su hora (incluido el envío)
+- **Ciclo del programador de 20 s** (`CICLO_SEG`); constantes en un solo lugar (`app/envio_config.py`)
+- **Retomar la cola tras un reinicio**: latido en `estado_programador`; los `en_cola` se retoman sin perderse ni duplicarse, un `enviando` huérfano pasa a `fallido` (nunca se reenvía) y tras más de 60 min sin actividad los pendientes quedan `vencido` por "servidor sin actividad"
+- **Aviso al programar** ("Tu mensaje saldría aproximadamente a las HH:MM", o cuántos mensajes tiene ya ese número) que habla siempre de ESTE mensaje y respeta la cola y el último envío; en Mensajes, los de la cola muestran "En cola · sale aprox. HH:MM"
+- **Hora pasada**: el selector no permite horas pasadas en móvil (`min`), aviso amarillo "Esa hora ya pasó: el mensaje se enviará de inmediato" y el backend rechaza una hora pasada por más de 2 minutos salvo "Enviar ahora"
+- **Semáforo anti-spam** por número (verde < 100, amarillo 100–300, rojo > 300 mensajes ponderados al día; grupo = 0,2; umbrales a la mitad si el número tiene < 7 días; aviso si el mismo texto va a más de 20 números individuales). Nunca cancela mensajes: solo avisa y alarga pausas
+- **"Escribiendo…"** antes de enviar texto, imagen y audio (`options.delay/presence` de Evolution), activable con `ENVIO_ESCRIBIENDO=1`; se desactiva solo si Evolution lo rechaza
+- **Límites de peso por archivo**: imagen 5 MB, audio 16 MB, video 16 MB (tras conversión), documento 25 MB
+- Base de datos (migración idempotente): `mensajes_programados.enviado_en`, tabla `estado_programador` (latido)
+- Pruebas automáticas: 278
+
 ## v1.0.7 — 2026-10-14 — Mensajes vencidos, avisos de desconexión y calendario
 
 - **Tolerancia de retraso de 5 minutos** (`TOLERANCIA_RETRASO_MIN`, un solo lugar), medida al TOMAR el mensaje y no cuando sale. Dos fases: tomar (queda `en_cola` si entró a tiempo, o `vencido` con su motivo: sesión eliminada, WhatsApp desconectado, sin credenciales o servidor sin actividad) y enviar (lo que entró a la cola a tiempo se envía siempre, aunque la cola dure más). Se registra cuándo se tomó (`tomado_en`)

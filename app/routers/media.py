@@ -11,13 +11,33 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
+from app import envio_config as cfg
+
 logger = logging.getLogger("whatsapp_scheduler")
 
 _default = Path(__file__).resolve().parent.parent / "static" / "uploads"
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(_default)))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_BYTES = 50 * 1024 * 1024
+MAX_BYTES = cfg.MAX_ENTRADA_MB * 1024 * 1024     # tope del archivo ORIGINAL (el límite por tipo está en envio_config)
+_NOMBRE_TIPO = {"image": "La imagen", "audio": "El audio", "video": "El video", "document": "El documento"}
+
+
+def _mb(n: int) -> str:
+    return f"{n / 1024 / 1024:.1f}".replace(".", ",")
+
+
+def _error_peso(tipo: str, peso: int, convertido: bool = False) -> HTTPException:
+    limite = cfg.LIMITE_MB[tipo]
+    sugerencia = {"image": "Usa una imagen más liviana o reduce su resolución.",
+                  "audio": "Graba un audio más corto.",
+                  "video": "Prueba con un video más corto o de menor calidad.",
+                  "document": "Comprime el documento o divídelo en partes."}[tipo]
+    cuando = " después de convertirlo" if convertido else ""
+    return HTTPException(
+        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        detail=f"{_NOMBRE_TIPO[tipo]} pesa {_mb(peso)} MB{cuando}; el máximo permitido es {limite} MB. {sugerencia}",
+    )
 
 MIME_TO_TIPO: dict[str, str] = {
     "image/jpeg": "image",
@@ -165,6 +185,10 @@ async def subir_archivo(file: UploadFile = File(...)):
             detail="El archivo está vacío",
         )
 
+    # Imágenes y documentos no se convierten: se mide el archivo tal cual. Audio y video se miden DESPUÉS de convertir.
+    if tipo_media in ("image", "document") and len(contenido) > cfg.LIMITE_MB[tipo_media] * 1024 * 1024:
+        raise _error_peso(tipo_media, len(contenido))
+
     original_stem = Path(file.filename or "archivo").stem
     ext = Path(file.filename or "").suffix.lower()
     if not ext and tipo_media == "document":
@@ -175,6 +199,10 @@ async def subir_archivo(file: UploadFile = File(...)):
     if tipo_media in ("audio", "video"):
         # Todo audio/video se recodifica; el original nunca se guarda.
         nombre_unico = await _convertir_media(contenido, tipo_media, ext, unico)
+        peso_final = (UPLOAD_DIR / nombre_unico).stat().st_size
+        if peso_final > cfg.LIMITE_MB[tipo_media] * 1024 * 1024:
+            (UPLOAD_DIR / nombre_unico).unlink(missing_ok=True)       # no queda guardado
+            raise _error_peso(tipo_media, peso_final, convertido=True)
     else:
         nombre_unico = f"{unico}{ext}"
         (UPLOAD_DIR / nombre_unico).write_bytes(contenido)

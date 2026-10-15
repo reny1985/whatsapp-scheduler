@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user, require_admin
 from app.database import get_db
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario
+from app import envio_config as cfg
+from app.services import estimacion, semaforo
 from app.schemas import MensajeProgramadoCreate, MensajeProgramadoRead, MensajeProgramadoUpdate
 
 logger = logging.getLogger("whatsapp_scheduler")
@@ -47,13 +49,20 @@ async def programar_mensaje(
     db: AsyncSession = Depends(get_db),
     usuario: Usuario = Depends(require_admin),
 ):
+    ahora = datetime.now(timezone.utc)
+    pasada_min = (ahora - payload.fecha_hora_disparo).total_seconds() / 60
+    if not payload.forzar and pasada_min > cfg.HORA_PASADA_TOLERANCIA_MIN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Esa hora ya pasó hace {int(pasada_min)} min. Elige una hora futura o confirma «Enviar ahora» "
+                   f"para que salga de inmediato.",
+        )
     sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
 
     datos = payload.model_dump(exclude={'forzar'})
-    ahora = datetime.now(timezone.utc)
-    if payload.forzar and datos["fecha_hora_disparo"] <= ahora:
-        # "Enviar ahora": se programa para este instante; si conservara la hora pasada, el programador
-        # la vería fuera de la tolerancia de retraso y la marcaría "vencida" en vez de enviarla.
+    if datos["fecha_hora_disparo"] <= ahora:
+        # "Enviar ahora" (o una hora pasada hace menos de 2 min): se programa para este instante; si conservara la
+        # hora pasada, el programador la vería fuera de la tolerancia de retraso y la marcaría "vencida".
         datos["fecha_hora_disparo"] = ahora
     # El mensaje es del USUARIO (no de la sesión) y recuerda con qué número se programó: si la sesión se
     # borra y se vuelve a vincular el mismo número, se reasigna solo.
@@ -186,6 +195,27 @@ async def reasignar_todos_sin_sesion(
     return {"reasignados": res.rowcount}
 
 
+@router.get("/estimacion")
+async def estimacion_al_programar(
+    id_sesion: uuid.UUID,
+    fecha_hora: datetime,
+    grupo: bool = False,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    """Aviso al programar: si la sesión ya tiene mensajes en una ventana cercana a `fecha_hora`, cuántos son y entre
+    qué horas saldrían aproximadamente (simulación con las pausas promedio; el doble si el semáforo está en rojo)."""
+    sesion = await _sesion_del_usuario(db, id_sesion, usuario)
+    if fecha_hora.tzinfo is None:
+        fecha_hora = fecha_hora.replace(tzinfo=timezone(timedelta(hours=-5)))   # hora de Ecuador
+    ahora = datetime.now(timezone.utc)
+    pendientes = await estimacion.pendientes_de_sesion(db, id_sesion)
+    rojo = await semaforo.es_rojo(db, id_sesion, sesion.fecha_creacion)
+    ultimo = await estimacion.ultimo_envio_de_sesion(db, id_sesion, ahora)
+    destino = "destino@g.us" if grupo else "destino@s.whatsapp.net"
+    return estimacion.aviso_al_programar(pendientes, fecha_hora, destino, ahora, rojo, ultimo)
+
+
 @router.get("/", response_model=list[MensajeProgramadoRead])
 async def listar_mensajes(
     estado: str | None = None,
@@ -204,7 +234,20 @@ async def listar_mensajes(
         q = q.where(MensajeProgramado.id_sesion.is_(None))
     q = q.limit(limit).offset(offset)
     res = await db.execute(q)
-    return res.scalars().all()
+    lista = res.scalars().all()
+
+    # "En cola · sale aprox. HH:MM": misma simulación que el aviso al programar, por sesión
+    ahora = datetime.now(timezone.utc)
+    for id_sesion in {m.id_sesion for m in lista if m.estado_envio == "en_cola" and m.id_sesion}:
+        sesion = await db.get(SesionWhatsApp, id_sesion)
+        pendientes = await estimacion.pendientes_de_sesion(db, id_sesion)
+        rojo = await semaforo.es_rojo(db, id_sesion, sesion.fecha_creacion if sesion else None)
+        ultimo = await estimacion.ultimo_envio_de_sesion(db, id_sesion, ahora)
+        salidas = estimacion.simular([(p.id_mensaje, p.fecha_hora_disparo, p.id_grupo) for p in pendientes], ahora, rojo, ultimo)
+        for m in lista:
+            if m.id_mensaje in salidas and m.estado_envio == "en_cola":
+                m.salida_estimada = salidas[m.id_mensaje]
+    return lista
 
 
 @router.patch("/{id_mensaje}/cancelar", response_model=MensajeProgramadoRead)
