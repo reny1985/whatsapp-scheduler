@@ -1830,7 +1830,7 @@ async function actualizarAvisoEscalonado() {
     const d = await apiFetch('/mensajes/estimacion?' + q);
     if (!d.n) { el.style.display = 'none'; return; }
     _ultimoAvisoEscalonado = d.mensaje;
-    el.textContent = '⏱️ ' + d.mensaje + (d.duplicadas ? '. Tus envíos de hoy son muchos: las pausas se duplicaron para proteger tu número.' : '.');
+    el.textContent = '⏱️ ' + d.mensaje + (d.duplicadas ? ' Tus envíos de hoy son muchos: las pausas se duplicaron para proteger tu número.' : '');
     el.style.display = '';
   } catch { el.style.display = 'none'; }
 }

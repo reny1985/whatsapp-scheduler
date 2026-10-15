@@ -307,11 +307,83 @@ def _pend(minuto, destino=INDIV, n=1):
 
 async def test_estimacion_con_las_pausas_promedio():
     ahora = datetime(2026, 10, 14, 14, 50, tzinfo=timezone.utc)
-    hora = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
+    hora = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)                 # 10:00 en Ecuador
     r = estimacion.aviso_al_programar(_pend(0, n=3), hora, INDIV, ahora, rojo=False)
-    # primero 10:00:10 (espera media 10 s); luego +32,5 s cada uno → el 4.º (nuevo) a las 10:01:47
-    assert r["n"] == 3 and r["hora"] == "10:00" and r["desde"] == "10:00" and r["hasta"] == "10:01"
-    assert r["mensaje"] == "Este número ya tiene 3 mensajes a las 10:00; se enviarán aproximadamente entre 10:00 y 10:01"
+    # los 3 salen a 10:00:10, 10:00:42,5 y 10:01:15; el nuevo (4.º) a 10:01:47,5 → "10:01"
+    assert r["n"] == 3 and r["salida"] == "10:01"
+    assert r["mensaje"] == "Este número ya tiene 3 mensajes a las 10:00. Tu mensaje saldría aproximadamente a las 10:01."
+
+
+# ── El caso real que falló en staging: 4 mensajes a las 23:57 y un quinto a las 23:59 ──
+
+def _ec(h, m, s=0):
+    """Instante de Ecuador (UTC-5) del 14-oct-2026."""
+    return datetime(2026, 10, 14, h, m, s, tzinfo=timezone(timedelta(hours=-5)))
+
+
+def _ped(hora_ec, n=1, destino=INDIV):
+    return [SimpleNamespace(id_mensaje=uuid.uuid4(), fecha_hora_disparo=hora_ec, id_grupo=destino) for _ in range(n)]
+
+
+async def test_caso_real_4_mensajes_a_las_2357_y_un_quinto_a_las_2359():
+    ahora = _ec(23, 56, 30)
+    vecinos = _ped(_ec(23, 57), n=4)
+    r = estimacion.aviso_al_programar(vecinos, _ec(23, 59), INDIV, ahora, rojo=False)
+    assert r["n"] == 4
+    assert "entre" not in r["mensaje"]                                        # ya no es un rango que empieza antes
+    # NO dice que los 4 estén "a las 23:59": están a las 23:57
+    assert r["mensaje"] == "Este número ya tiene 4 mensajes a las 23:57. Tu mensaje saldría aproximadamente a las 23:59."
+    # el quinto no sale antes de su hora programada (23:59:00); los 4 anteriores acaban a las 23:58:47,5 y la pausa
+    # media (32,5 s) lo empuja a las 23:59:20
+    items = [(v.id_mensaje, v.fecha_hora_disparo, v.id_grupo) for v in vecinos] + [("nuevo", _ec(23, 59), INDIV)]
+    salidas = estimacion.simular(items, ahora, rojo=False)
+    assert salidas["nuevo"] == _ec(23, 59, 20)
+    assert salidas["nuevo"] >= _ec(23, 59)
+
+
+async def test_cuatro_mensajes_a_las_2359_y_un_quinto_a_las_2359_termina_despues_de_las_2359():
+    ahora = _ec(23, 55)
+    vecinos = _ped(_ec(23, 59), n=4)
+    r = estimacion.aviso_al_programar(vecinos, _ec(23, 59), INDIV, ahora, rojo=False)
+    # 23:59:10 + 4 × 32,5 s = 00:01:20 → el quinto sale cerca de las 00:01
+    assert r["salida"] == "00:01"
+    assert r["mensaje"] == "Este número ya tiene 4 mensajes a las 23:59. Tu mensaje saldría aproximadamente a las 00:01."
+
+
+async def test_con_horas_distintas_no_dice_a_las_hhmm_para_todos():
+    ahora = _ec(23, 50)
+    vecinos = _ped(_ec(23, 57), n=2) + _ped(_ec(23, 58), n=2)
+    r = estimacion.aviso_al_programar(vecinos, _ec(23, 59), INDIV, ahora, rojo=False)
+    assert r["n"] == 4
+    assert r["mensaje"].startswith("Este número ya tiene 4 mensajes cerca de esa hora. Tu mensaje saldría aproximadamente a las ")
+    assert " a las 23:57" not in r["mensaje"].split("Tu mensaje")[0]
+
+
+async def test_la_salida_nunca_es_anterior_a_la_hora_programada():
+    ahora = _ec(20, 0)
+    for hora in (_ec(23, 59), _ec(23, 30), _ec(20, 5)):
+        for vecinos in (_ped(hora - timedelta(minutes=2), n=3), _ped(hora, n=6), _ped(hora + timedelta(minutes=3), n=2)):
+            items = [(v.id_mensaje, v.fecha_hora_disparo, v.id_grupo) for v in vecinos] + [("nuevo", hora, INDIV)]
+            assert estimacion.simular(items, ahora, rojo=False)["nuevo"] >= hora
+
+
+async def test_cola_ya_corriendo_empuja_la_estimacion_despues_de_su_final():
+    """10 mensajes ya vencidos de hora (cola corriendo): uno nuevo para 'dentro de 1 min' sale cuando termine esa cola."""
+    ahora = _ec(12, 0)
+    corriendo = _ped(_ec(11, 59), n=10)
+    r = estimacion.aviso_al_programar(corriendo, _ec(12, 1), INDIV, ahora, rojo=False)
+    # primero 12:00:10; el 10.º a 12:00:10 + 9 × 32,5 = 12:05:02,5; el nuevo a 12:05:35
+    assert r["salida"] == "12:05" and r["n"] == 10
+
+
+async def test_respeta_la_pausa_si_la_sesion_acaba_de_enviar():
+    ahora = _ec(12, 0, 5)
+    vecinos = _ped(_ec(12, 0), n=1)
+    items = [(vecinos[0].id_mensaje, vecinos[0].fecha_hora_disparo, INDIV)]
+    sin = estimacion.simular(items, ahora, False)[vecinos[0].id_mensaje]
+    con = estimacion.simular(items, ahora, False, ultimo_envio=_ec(12, 0, 2))[vecinos[0].id_mensaje]
+    assert sin == _ec(12, 0, 15)                         # sin envío reciente: espera inicial media (10 s)
+    assert con == _ec(12, 0, 2) + timedelta(seconds=32.5)    # el último envío (12:00:02) + la pausa media
 
 
 async def test_estimacion_singular_y_sin_mensajes_cercanos():

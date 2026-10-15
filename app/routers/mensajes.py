@@ -200,10 +200,12 @@ async def estimacion_al_programar(
     sesion = await _sesion_del_usuario(db, id_sesion, usuario)
     if fecha_hora.tzinfo is None:
         fecha_hora = fecha_hora.replace(tzinfo=timezone(timedelta(hours=-5)))   # hora de Ecuador
+    ahora = datetime.now(timezone.utc)
     pendientes = await estimacion.pendientes_de_sesion(db, id_sesion)
     rojo = await semaforo.es_rojo(db, id_sesion, sesion.fecha_creacion)
+    ultimo = await estimacion.ultimo_envio_de_sesion(db, id_sesion, ahora)
     destino = "destino@g.us" if grupo else "destino@s.whatsapp.net"
-    return estimacion.aviso_al_programar(pendientes, fecha_hora, destino, datetime.now(timezone.utc), rojo)
+    return estimacion.aviso_al_programar(pendientes, fecha_hora, destino, ahora, rojo, ultimo)
 
 
 @router.get("/", response_model=list[MensajeProgramadoRead])
@@ -232,7 +234,8 @@ async def listar_mensajes(
         sesion = await db.get(SesionWhatsApp, id_sesion)
         pendientes = await estimacion.pendientes_de_sesion(db, id_sesion)
         rojo = await semaforo.es_rojo(db, id_sesion, sesion.fecha_creacion if sesion else None)
-        salidas = estimacion.simular([(p.id_mensaje, p.fecha_hora_disparo, p.id_grupo) for p in pendientes], ahora, rojo)
+        ultimo = await estimacion.ultimo_envio_de_sesion(db, id_sesion, ahora)
+        salidas = estimacion.simular([(p.id_mensaje, p.fecha_hora_disparo, p.id_grupo) for p in pendientes], ahora, rojo, ultimo)
         for m in lista:
             if m.id_mensaje in salidas and m.estado_envio == "en_cola":
                 m.salida_estimada = salidas[m.id_mensaje]
