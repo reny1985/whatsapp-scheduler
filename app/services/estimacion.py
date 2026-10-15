@@ -68,24 +68,39 @@ async def ultimo_envio_de_sesion(db: AsyncSession, id_sesion, ahora: datetime) -
 
 def aviso_al_programar(pendientes: list, fecha_hora: datetime, destino: str, ahora: datetime, rojo: bool,
                        ultimo_envio: datetime | None = None) -> dict:
-    """Aviso para un mensaje nuevo programado a `fecha_hora`: cuántos mensajes tiene la sesión cerca de esa hora y
-    cuándo saldría ESTE. {'n': 0} si no hay ninguno cerca."""
+    """Aviso para un mensaje nuevo programado a `fecha_hora`, siempre hablando de ESTE mensaje.
+
+    · Sin mensajes cerca → {'n': 0} (no se muestra aviso).
+    · Si sale ANTES que los otros: "Tu mensaje saldría aproximadamente a las HH:MM (antes que los N mensajes de las HH:MM)."
+    · Si sale después: "Este número ya tiene N mensajes a las HH:MM. Tu mensaje saldría aproximadamente a las HH:MM."
+      (si los vecinos tienen horas distintas: "…N mensajes cerca de esa hora…")."""
+    pasada = fecha_hora < ahora
     ventana = timedelta(minutes=cfg.VENTANA_AVISO_MIN)
     cercanos = [m for m in pendientes if abs(m.fecha_hora_disparo - fecha_hora) <= ventana]
     if not cercanos:
-        return {"n": 0}
+        return {"n": 0, "hora_pasada": pasada} if pasada else {"n": 0}
     items = [(m.id_mensaje, m.fecha_hora_disparo, m.id_grupo) for m in pendientes] + [("nuevo", fecha_hora, destino)]
-    mi_salida = simular(items, ahora, rojo, ultimo_envio)["nuevo"]
+    salidas = simular(items, ahora, rojo, ultimo_envio)
+    mi_salida = salidas["nuevo"]
+    mi_hora = hhmm(mi_salida)
 
     n = len(cercanos)
-    horas_vecinas = {hhmm(m.fecha_hora_disparo) for m in cercanos}
-    plural = "mensajes" if n != 1 else "mensaje"
-    # Si todos los vecinos están en el MISMO minuto se dice cuál; si sus horas son distintas, "cerca de esa hora"
-    donde = f"a las {next(iter(horas_vecinas))}" if len(horas_vecinas) == 1 else "cerca de esa hora"
+    horas_vecinas = sorted({hhmm(m.fecha_hora_disparo) for m in cercanos})
+    sale_antes = all(salidas[m.id_mensaje] > mi_salida for m in cercanos)
+    if sale_antes:
+        ref = f"de las {horas_vecinas[0]}" if len(horas_vecinas) == 1 else f"de entre las {horas_vecinas[0]} y las {horas_vecinas[-1]}"
+        otros = "el mensaje" if n == 1 else f"los {n} mensajes"
+        mensaje = f"Tu mensaje saldría aproximadamente a las {mi_hora} (antes que {otros} {ref})."
+    else:
+        plural = "mensajes" if n != 1 else "mensaje"
+        donde = f"a las {horas_vecinas[0]}" if len(horas_vecinas) == 1 else "cerca de esa hora"
+        mensaje = f"Este número ya tiene {n} {plural} {donde}. Tu mensaje saldría aproximadamente a las {mi_hora}."
     return {
         "n": n,
         "hora": hhmm(fecha_hora),
-        "salida": hhmm(mi_salida),
+        "salida": mi_hora,
+        "antes_que_los_otros": sale_antes,
+        "hora_pasada": pasada,
         "duplicadas": rojo,
-        "mensaje": f"Este número ya tiene {n} {plural} {donde}. Tu mensaje saldría aproximadamente a las {hhmm(mi_salida)}.",
+        "mensaje": mensaje,
     }

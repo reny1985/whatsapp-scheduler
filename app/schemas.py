@@ -107,8 +107,7 @@ class MensajeProgramadoCreate(BaseModel):
             raise ValueError("tipo_media y url_media deben enviarse juntos")
         if self.texto_mensaje is None and self.url_media is None:
             raise ValueError("Se requiere texto_mensaje o un adjunto (url_media)")
-        if not self.forzar and self.fecha_hora_disparo <= datetime.now(timezone.utc):
-            raise ValueError("fecha_hora_disparo debe ser una fecha futura")
+        # La hora pasada se valida en el endpoint (con un mensaje claro y la tolerancia de 2 min), no aquí.
         return self
 
     def to_orm_dict(self) -> dict:

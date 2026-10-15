@@ -237,7 +237,7 @@
         <div class="card-title">Nuevo mensaje programado</div>
         <div id="alert-programar"></div>
 
-        <form id="form-programar">
+        <form id="form-programar" novalidate>
           <input type="hidden" id="hid-sesion" />
           <input type="hidden" id="hid-url-media" />
           <input type="hidden" id="hid-tipo-media" />
@@ -411,6 +411,9 @@
           <div class="form-group">
             <label class="form-label" for="inp-fecha">Fecha y hora de envío *</label>
             <input id="inp-fecha" type="datetime-local" class="form-control" required />
+            <div id="aviso-hora-pasada" class="aviso-hora-pasada" style="display:none" role="alert">
+              ⚠️ Esa hora ya pasó: el mensaje se enviará de inmediato.
+            </div>
             <div id="aviso-escalonado" class="aviso-escalonado" style="display:none" role="status"></div>
             <p style="font-size:.78rem;color:var(--color-muted);margin-top:6px">
               Zona horaria: Ecuador (UTC-5). Tu mensaje saldrá a la hora programada (con unos segundos de margen). Si ese

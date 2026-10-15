@@ -24,6 +24,9 @@ NUMERO_NUEVO_DIAS = 7               # un número vinculado hace menos de esto ti
 PESO_GRUPO = 0.2                    # un mensaje a grupo cuenta como esto de un individual
 TEXTO_REPETIDO_MAX = 20             # el mismo texto a más de N números individuales en el día → aviso
 
+# ── Hora elegida ya pasada ───────────────────────────────────────────────────
+HORA_PASADA_TOLERANCIA_MIN = 2      # se acepta una hora pasada hace menos de esto (sale de inmediato); más → hay que "Enviar ahora"
+
 # ── Aviso al programar ───────────────────────────────────────────────────────
 VENTANA_AVISO_MIN = 10              # "mensajes en una ventana cercana": ± minutos alrededor de la hora elegida
 

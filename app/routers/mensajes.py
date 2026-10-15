@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user, require_admin
 from app.database import get_db
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario
+from app import envio_config as cfg
 from app.services import estimacion, semaforo
 from app.schemas import MensajeProgramadoCreate, MensajeProgramadoRead, MensajeProgramadoUpdate
 
@@ -48,13 +49,20 @@ async def programar_mensaje(
     db: AsyncSession = Depends(get_db),
     usuario: Usuario = Depends(require_admin),
 ):
+    ahora = datetime.now(timezone.utc)
+    pasada_min = (ahora - payload.fecha_hora_disparo).total_seconds() / 60
+    if not payload.forzar and pasada_min > cfg.HORA_PASADA_TOLERANCIA_MIN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Esa hora ya pasó hace {int(pasada_min)} min. Elige una hora futura o confirma «Enviar ahora» "
+                   f"para que salga de inmediato.",
+        )
     sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
 
     datos = payload.model_dump(exclude={'forzar'})
-    ahora = datetime.now(timezone.utc)
-    if payload.forzar and datos["fecha_hora_disparo"] <= ahora:
-        # "Enviar ahora": se programa para este instante; si conservara la hora pasada, el programador
-        # la vería fuera de la tolerancia de retraso y la marcaría "vencida" en vez de enviarla.
+    if datos["fecha_hora_disparo"] <= ahora:
+        # "Enviar ahora" (o una hora pasada hace menos de 2 min): se programa para este instante; si conservara la
+        # hora pasada, el programador la vería fuera de la tolerancia de retraso y la marcaría "vencida".
         datos["fecha_hora_disparo"] = ahora
     # El mensaje es del USUARIO (no de la sesión) y recuerda con qué número se programó: si la sesión se
     # borra y se vuelve a vincular el mismo número, se reasigna solo.

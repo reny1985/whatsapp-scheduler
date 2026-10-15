@@ -299,6 +299,30 @@ function _ecuadorNow() {
 // Pre-rellena el campo inp-fecha con la hora actual de Ecuador
 function _prefillFecha() {
   fijarFecha('inp-fecha', _ecuadorNow());
+  _actualizarMinFecha();
+  _actualizarAvisoHoraPasada();
+}
+
+// ---- Hora ya pasada ----
+// El selector nativo del móvil permite elegir una hora que ya pasó. Se pone `min` y, si aun así el valor
+// quedó en el pasado, se avisa en amarillo debajo del campo. (El backend acepta hasta 2 min de atraso; más
+// de eso exige "Enviar ahora".)
+const HORA_PASADA_TOLERANCIA_MIN = 2;
+
+function _actualizarMinFecha() {
+  const el = document.getElementById('inp-fecha');
+  if (el && el.type === 'datetime-local') el.min = _ecuadorNow();
+}
+
+function _horaYaPaso(valor) {
+  return !!valor && valor < _ecuadorNow();      // "YYYY-MM-DDTHH:MM" de Ecuador: la comparación de texto es válida
+}
+
+function _actualizarAvisoHoraPasada() {
+  const aviso = document.getElementById('aviso-hora-pasada');
+  const el = document.getElementById('inp-fecha');
+  if (!aviso || !el) return;
+  aviso.style.display = _horaYaPaso(el.value) ? '' : 'none';
 }
 
 // ---- Selector de fecha y hora ----
@@ -1885,8 +1909,10 @@ async function programarMensaje(e) {
   let forzar = false;
   {
     const fechaElegida = new Date(fechaHora + ':00-05:00');
-    if (fechaElegida <= new Date()) {
-      const ok = confirm('La hora seleccionada ya pasó. ¿Enviar ahora?');
+    const pasadaMin = (Date.now() - fechaElegida.getTime()) / 60000;
+    if (pasadaMin > HORA_PASADA_TOLERANCIA_MIN) {
+      // pasó hace más de 2 min: hay que confirmar "Enviar ahora" (si fue hace menos, el backend la acepta y sale de inmediato)
+      const ok = confirm(`La hora seleccionada ya pasó (hace ${Math.floor(pasadaMin)} min). ¿Enviar ahora?`);
       if (!ok) return;
       forzar = true;
     }
@@ -2373,6 +2399,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   iniciarSelectoresFecha();
   _prefillFecha();
   document.getElementById('inp-fecha')?.addEventListener('change', _programarAvisoEscalonado);
+  ['change', 'input'].forEach(ev => document.getElementById('inp-fecha')?.addEventListener(ev, _actualizarAvisoHoraPasada));
+  document.getElementById('inp-fecha')?.addEventListener('focus', _actualizarMinFecha);
+  _actualizarMinFecha();
+  _actualizarAvisoHoraPasada();
+  setInterval(() => { _actualizarMinFecha(); _actualizarAvisoHoraPasada(); }, 30000);   // el reloj avanza mientras el formulario está abierto
   $$('input[name="tipo-destino"]').forEach(r => r.addEventListener('change', _programarAvisoEscalonado));
   document.getElementById('sel-sesion')?.addEventListener('change', _programarAvisoEscalonado);
 
