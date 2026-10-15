@@ -46,6 +46,16 @@ async def _carga(maker, sid, n, destino_fmt="5939{:08d}@s.whatsapp.net", texto_f
         await db.commit()
 
 
+def _sorteo_inicial(monkeypatch, valor):
+    """Fija el sorteo de la espera inicial (0–20 s); las pausas entre envíos siguen sorteándose normalmente."""
+    real = scheduler.random.uniform
+
+    def uniforme(a, b):
+        return valor if (a, b) == tuple(cfg.ESPERA_INICIAL_COLA) else real(a, b)
+
+    monkeypatch.setattr(scheduler.random, "uniform", uniforme)
+
+
 # ══ 1) Colas por sesión ══════════════════════════════════════════════════════
 
 async def test_las_pausas_estan_dentro_de_rango_segun_el_destino(Session, _programador_limpio):
@@ -55,15 +65,16 @@ async def test_las_pausas_estan_dentro_de_rango_segun_el_destino(Session, _progr
     for i, d in enumerate(destinos):
         await _msg(Session, sid=sid, destino=d, disparo=HACE(100 - i))     # orden de disparo = orden de la lista
     await _ciclo()
-    assert len(dormidas) == len(destinos) + 1                               # espera inicial + una pausa tras cada envío
-    assert 0 <= dormidas[0] <= cfg.ESPERA_INICIAL_COLA[1]
-    for d, pausa in zip(destinos, dormidas[1:]):
+    # los mensajes llevan ≥ 92 s de retraso: ya no hay espera inicial (se descuenta); solo una pausa tras cada envío
+    assert len(dormidas) == len(destinos)
+    for d, pausa in zip(destinos, dormidas):
         lo, hi = cfg.PAUSA_GRUPO if d.endswith("@g.us") else cfg.PAUSA_INDIVIDUAL
         assert lo <= pausa <= hi, (d, pausa)
 
 
-async def test_espera_inicial_solo_antes_del_primero_y_nunca_antes_de_la_hora(Session, _programador_limpio):
+async def test_espera_inicial_solo_antes_del_primero_y_nunca_antes_de_la_hora(Session, _programador_limpio, monkeypatch):
     dormidas = _programador_limpio
+    _sorteo_inicial(monkeypatch, 18.0)                                       # sorteo fijo de 18 s
     sid = await _sesion(Session, fecha_creacion=VIEJA())
     futuro = await _msg(Session, sid=sid, disparo=datetime.now(timezone.utc) + timedelta(seconds=30))
     pasado = await _msg(Session, sid=sid, disparo=HACE(5))
@@ -72,7 +83,8 @@ async def test_espera_inicial_solo_antes_del_primero_y_nunca_antes_de_la_hora(Se
     assert (await _m(Session, futuro)).estado_envio == "programado"
     enviado = await _m(Session, pasado)
     assert enviado.estado_envio == "enviado" and enviado.enviado_en >= enviado.fecha_hora_disparo
-    assert 0 <= dormidas[0] <= 20 and len(dormidas) == 2                    # una espera inicial + una pausa
+    assert len(dormidas) == 2                                               # una espera inicial + una pausa
+    assert 12.5 <= dormidas[0] <= 13.0                                      # 18 s sorteados − ~5 s que ya esperó
 
 
 async def test_los_mensajes_de_una_sesion_salen_en_orden_de_fecha_hora_disparo(Session):
@@ -270,7 +282,7 @@ async def test_en_rojo_las_pausas_se_duplican_y_ningun_mensaje_se_cancela(Sessio
     await _carga(Session, sid, 310)                                          # rojo: > 300 hoy
     pend = [await _msg(Session, sid=sid, destino=d, disparo=HACE(80 - i)) for i, d in enumerate([INDIV, GRUPO, INDIV])]
     await _ciclo()
-    pausas = dormidas[1:]
+    pausas = dormidas[1:]                # la 1.ª es solo el resto de la pausa mínima (la carga acaba de "enviar")
     assert len(pausas) == 3
     assert 2 * cfg.PAUSA_INDIVIDUAL[0] <= pausas[0] <= 2 * cfg.PAUSA_INDIVIDUAL[1]      # 40–90 s
     assert 2 * cfg.PAUSA_GRUPO[0] <= pausas[1] <= 2 * cfg.PAUSA_GRUPO[1]                # 16–40 s
@@ -286,7 +298,8 @@ async def test_en_verde_las_pausas_no_se_duplican(Session, _programador_limpio):
     sid = await _sesion(Session, fecha_creacion=VIEJA())
     await _msg(Session, sid=sid, destino=INDIV, disparo=HACE(30))
     await _ciclo()
-    assert cfg.PAUSA_INDIVIDUAL[0] <= dormidas[1] <= cfg.PAUSA_INDIVIDUAL[1]
+    assert len(dormidas) == 1                                                # 30 s de retraso: sin espera inicial
+    assert cfg.PAUSA_INDIVIDUAL[0] <= dormidas[0] <= cfg.PAUSA_INDIVIDUAL[1]
 
 
 async def test_el_resumen_del_inicio_trae_el_semaforo_de_cada_numero(Session):
@@ -587,3 +600,56 @@ async def test_el_formulario_muestra_los_nuevos_limites():
     html = open(media.__file__.replace("routers/media.py", "templates/index.html"), encoding="utf-8").read()
     assert "Máx. 50 MB" not in html
     assert "imágenes 5 MB" in html and "audio y video 16 MB" in html and "documentos 25 MB" in html
+
+
+# ══ 7) Espera inicial: se descuenta lo que el mensaje ya esperó por el ciclo ═════════════════════
+
+@pytest.mark.parametrize("ya,muestra,esperado", [
+    (0.0, 15.0, 15.0),       # recién llegó su hora: toda la espera sorteada
+    (5.0, 18.0, 13.0),       # ya esperó 5 s por el ciclo: faltan 13
+    (12.0, 8.0, 0.0),        # ya esperó más que el sorteo: no espera nada
+    (19.9, 20.0, 0.1),
+    (45.0, 20.0, 0.0),       # cola con retraso (p. ej. tras un reinicio): sin espera extra
+    (-3.0, 10.0, 10.0),      # un reloj adelantado no suma espera
+])
+async def test_espera_inicial_descuenta_lo_que_ya_espero(ya, muestra, esperado):
+    assert scheduler.espera_inicial(ya, muestra) == pytest.approx(esperado)
+
+
+async def test_espera_inicial_siempre_respeta_la_pausa_minima_tras_un_envio_reciente():
+    assert scheduler.espera_inicial(ya_esperado=30.0, muestra=5.0, resto_pausa=12.0) == 12.0
+    assert scheduler.espera_inicial(ya_esperado=0.0, muestra=20.0, resto_pausa=12.0) == 20.0
+
+
+async def test_el_primero_sale_como_mucho_20_s_despues_de_su_hora_mas_el_envio():
+    """Para cualquier espera ya cumplida por el ciclo (0–20 s) y cualquier sorteo (0–20 s), ya + espera ≤ 20 s:
+    el primero sale entre 0 y 20 s tras su hora (más 1–3 s del envío ≈ 23 s)."""
+    for ya in [x / 2 for x in range(0, 41)]:                               # 0, 0.5, … 20 s
+        for muestra in [x / 2 for x in range(0, 41)]:
+            espera = scheduler.espera_inicial(ya, muestra)
+            assert espera >= 0
+            assert ya + espera <= 20.0 + 1e-9, (ya, muestra, espera)
+            assert ya + espera >= ya                                        # nunca antes de lo ya esperado
+
+
+async def test_en_la_cola_real_el_primero_descuenta_el_ciclo_y_las_pausas_no_cambian(Session, _programador_limpio, monkeypatch):
+    dormidas = _programador_limpio
+    _sorteo_inicial(monkeypatch, 17.0)
+    sid = await _sesion(Session, fecha_creacion=VIEJA())
+    for i, d in enumerate([INDIV, GRUPO, INDIV]):
+        await _msg(Session, sid=sid, destino=d, disparo=HACE(8) if i == 0 else HACE(8) + timedelta(seconds=i))
+    await _ciclo()
+    assert len(dormidas) == 4                                               # espera inicial + 3 pausas
+    assert 8.5 <= dormidas[0] <= 9.0                                        # 17 s − ~8 s ya esperados
+    lo, hi = cfg.PAUSA_INDIVIDUAL
+    assert lo <= dormidas[1] <= hi and cfg.PAUSA_GRUPO[0] <= dormidas[2] <= cfg.PAUSA_GRUPO[1] and lo <= dormidas[3] <= hi
+
+
+async def test_si_el_ciclo_ya_consumio_el_sorteo_el_primero_sale_sin_espera_extra(Session, _programador_limpio, monkeypatch):
+    dormidas = _programador_limpio
+    _sorteo_inicial(monkeypatch, 6.0)
+    sid = await _sesion(Session, fecha_creacion=VIEJA())
+    await _msg(Session, sid=sid, destino=INDIV, disparo=HACE(14))            # ya esperó 14 s por el ciclo (> 6 s sorteados)
+    enviar = await _ciclo()
+    assert enviar.await_count == 1
+    assert len(dormidas) == 1 and cfg.PAUSA_INDIVIDUAL[0] <= dormidas[0] <= cfg.PAUSA_INDIVIDUAL[1]   # solo la pausa final

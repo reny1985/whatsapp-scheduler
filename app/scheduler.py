@@ -326,6 +326,15 @@ def pausa_entre_envios(destino: str, rojo: bool) -> float:
     return random.uniform(*rango) * (cfg.MULT_PAUSA_ROJO if rojo else 1)
 
 
+def espera_inicial(ya_esperado: float, muestra: float, resto_pausa: float = 0.0) -> float:
+    """Segundos que falta esperar antes del PRIMER mensaje de una cola.
+
+    `muestra` es el sorteo 0–20 s; se le DESCUENTA lo que el mensaje ya esperó desde su hora programada (por el ciclo
+    de 20 s), así el primero sale como mucho ~20 s después de su hora (más el envío), y no 20 + 20. Nunca es negativa
+    y siempre respeta la pausa mínima si la sesión acaba de enviar algo."""
+    return max(muestra - max(ya_esperado, 0.0), resto_pausa, 0.0)
+
+
 async def _resto_de_pausa_minima(db: AsyncSession, id_sesion) -> float:
     """Si un trabajador anterior (o el proceso anterior) envió hace poco, cuánto falta para respetar la pausa mínima."""
     ultimo = (await db.execute(
@@ -362,9 +371,11 @@ async def _trabajador_sesion(id_sesion) -> None:
 
                 if primera:
                     primera = False
-                    # espera aleatoria antes del primero (siempre DESPUÉS de su hora, nunca antes) y respeta la pausa
-                    # mínima si ya se envió algo hace un instante
-                    espera = max(random.uniform(*cfg.ESPERA_INICIAL_COLA), await _resto_de_pausa_minima(db, id_sesion))
+                    # Espera aleatoria 0–20 s antes del primero, siempre DESPUÉS de su hora y descontando lo que ya
+                    # esperó por el ciclo; respeta la pausa mínima si ya se envió algo hace un instante.
+                    ya_esperado = (datetime.now(timezone.utc) - _aware(msg.fecha_hora_disparo)).total_seconds()
+                    espera = espera_inicial(ya_esperado, random.uniform(*cfg.ESPERA_INICIAL_COLA),
+                                            await _resto_de_pausa_minima(db, id_sesion))
                     if espera > 0:
                         await _dormir(espera)
 
