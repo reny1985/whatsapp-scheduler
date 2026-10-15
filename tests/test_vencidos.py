@@ -58,7 +58,7 @@ async def _estado(maker, mid):
 async def _tick(enviar=None):
     enviar = enviar or AsyncMock(return_value={"key": {"id": "X"}})
     with patch.object(scheduler, "_enviar_mensaje", new=enviar):
-        await scheduler._procesar_mensajes_pendientes()
+        await scheduler._procesar_mensajes_pendientes(esperar=True)
     return enviar
 
 
@@ -107,8 +107,8 @@ async def test_se_registra_cuando_se_tomo_el_mensaje(Session):
     mid = await _msg(Session, sid, _hace(seconds=30))
     enviar = AsyncMock(return_value={})
     with patch.object(scheduler, "_enviar_mensaje", new=enviar), \
-         patch.object(scheduler, "_enviar_cola", new=AsyncMock()):          # solo la fase de toma
-        await scheduler._procesar_mensajes_pendientes()
+         patch.object(scheduler, "_asegurar_trabajadores", new=AsyncMock()):          # solo la fase de toma
+        await scheduler._procesar_mensajes_pendientes(esperar=True)
     m = await _estado(Session, mid)
     assert m.estado_envio == "en_cola" and m.tomado_en is not None
 

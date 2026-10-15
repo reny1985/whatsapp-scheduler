@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.database import get_db
 from app.models import Usuario
+from app.services import semaforo
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -96,7 +97,7 @@ _SQL_PROXIMOS = text("""
 """)
 
 _SQL_SESIONES = text("""
-    SELECT id_sesion, nombre_sesion, numero_telefono, estado_conexion, perfil_nombre, perfil_foto_en
+    SELECT id_sesion, nombre_sesion, numero_telefono, estado_conexion, perfil_nombre, perfil_foto_en, fecha_creacion
     FROM sesiones_whatsapp
     WHERE id_usuario = :uid
     ORDER BY fecha_creacion
@@ -124,6 +125,9 @@ async def resumen(
     proximos = (await db.execute(_SQL_PROXIMOS, {"uid": uid, "limite": PROXIMOS_LIMITE})).mappings().all()
     sesiones = (await db.execute(_SQL_SESIONES, {"uid": uid})).mappings().all()
 
+    # Semáforo anti-spam de cada número (se calcula al vuelo; nunca cancela ni borra mensajes)
+    semaforos = {s["id_sesion"]: await semaforo.calcular(db, s["id_sesion"], s["fecha_creacion"]) for s in sesiones}
+
     enviados_7 = sum(d["enviados"] for d in dias)
     fallidos_7 = sum(d["fallidos"] for d in dias)
     terminados = enviados_7 + fallidos_7
@@ -148,6 +152,7 @@ async def resumen(
                 "conectado": s["estado_conexion"] == "conectado",
                 "nombre": s["perfil_nombre"],
                 "foto_v": s["perfil_foto_en"].isoformat() if s["perfil_foto_en"] else None,
+                "semaforo": semaforos[s["id_sesion"]],
             }
             for s in sesiones
         ],

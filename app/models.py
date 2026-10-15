@@ -153,6 +153,7 @@ class MensajeProgramado(Base):
     )
     error_envio: Mapped[str | None] = mapped_column(Text)   # motivo del fallo o del vencimiento
     tomado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    enviado_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     fecha_creacion: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )

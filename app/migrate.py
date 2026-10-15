@@ -127,6 +127,15 @@ _STEPS = [
     END $$
     """,
     "CREATE INDEX IF NOT EXISTS idx_mensajes_usuario_estado ON mensajes_programados (id_usuario, estado_envio, fecha_hora_disparo)",
+    # Cuándo salió realmente cada mensaje (semáforo y estimaciones). NULL en los anteriores a esta versión.
+    "ALTER TABLE mensajes_programados ADD COLUMN IF NOT EXISTS enviado_en TIMESTAMPTZ",
+    # Latido del programador: permite saber, tras un reinicio, cuánto estuvo caído el servidor
+    """
+    CREATE TABLE IF NOT EXISTS estado_programador (
+        clave VARCHAR(50) PRIMARY KEY,
+        valor TIMESTAMPTZ NOT NULL
+    )
+    """,
     # Borrar una sesión no debe borrar sus mensajes: FK CASCADE → SET NULL (sin tocar datos)
     "ALTER TABLE mensajes_programados ALTER COLUMN id_sesion DROP NOT NULL",
     "ALTER TABLE mensajes_programados DROP CONSTRAINT IF EXISTS mensajes_programados_id_sesion_fkey",

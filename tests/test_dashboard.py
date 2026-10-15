@@ -227,7 +227,7 @@ async def test_numero_de_consultas_no_depende_de_la_cantidad_de_mensajes(datos):
         await _msg(datos, sid, ahora + timedelta(hours=2), estado="programado")
     muchas = await medir()
     app.dependency_overrides.clear()
-    assert pocas == muchas <= 4
+    assert pocas == muchas <= 4 + 2 * 1     # 4 consultas del resumen + 2 del semáforo por número (1 sesión); no crece con los mensajes
 
 
 async def test_requiere_login():

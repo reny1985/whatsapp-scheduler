@@ -11,6 +11,7 @@ Ejecuta un job cada 60 s que:
        - Otro media (+caption opcional) → POST /message/sendMedia/{instancia}
   4. Marca como 'enviado' o 'fallido' según el resultado
 """
+import asyncio
 import logging
 import os
 import random
@@ -21,13 +22,14 @@ from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal as AsyncSessionFactory
 from app.models import MensajeProgramado, SesionWhatsApp, condicion_sesion_nunca_conectada
+from app import envio_config as cfg
 from app.routers.media import DOC_EXT_MIME
-from app.services import vigilancia
+from app.services import semaforo, vigilancia
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -37,9 +39,9 @@ EVOLUTION_KEY = os.getenv("EVOLUTION_API_KEY", "")
 # Servidor público para construir URL absoluta de archivos locales
 BASE_PUBLIC_URL = os.getenv("BASE_PUBLIC_URL", "http://host.docker.internal:8000")
 
-# Rango de jitter anti-thundering-herd (segundos)
-JITTER_MIN = 1
-JITTER_MAX = 60
+# Las pausas entre envíos, la espera inicial, el ciclo, etc. viven en app/envio_config.py (único lugar).
+# Ya no hay "dispersión" de hasta 60 s: cada sesión envía de a uno con su propia pausa aleatoria, y un mensaje
+# se toma recién cuando llega su hora (nunca antes).
 
 # Retraso máximo (minutos) entre la hora programada y el momento en que el programador TOMA el mensaje
 # para enviarlo. Se mide al tomarlo, no cuando sale: un mensaje que entró a la cola a tiempo se envía
@@ -98,12 +100,33 @@ def _datos_documento(url_media: str) -> tuple[str, str]:
     return base, DOC_EXT_MIME.get(ext, "application/octet-stream")
 
 
+# Si Evolution rechaza las options de "escribiendo…", se desactivan hasta el próximo reinicio (el envío NO se reintenta)
+_escribiendo_rechazado = False
+
+
+def _opciones_escribiendo(audio: bool = False) -> dict:
+    """options.delay/presence para simular "escribiendo…" (o "grabando audio…"). {} si está desactivado."""
+    if not cfg.ESCRIBIENDO_ACTIVO or _escribiendo_rechazado:
+        return {}
+    return {"delay": random.randint(*cfg.ESCRIBIENDO_MS), "presence": "recording" if audio else "composing"}
+
+
 async def _post_evolution(client: httpx.AsyncClient, endpoint: str, payload: dict, headers: dict) -> dict:
+    global _escribiendo_rechazado
     r = await client.post(endpoint, json=payload, headers=headers)
     logger.info("📥 Evolution %s → %s: %s", endpoint.rsplit("/message/", 1)[-1], r.status_code, r.text[:500])
     if r.status_code >= 400:
+        opciones = payload.get("options") or {}
+        if r.status_code in (400, 422) and ("presence" in opciones or "delay" in opciones) \
+                and any(w in r.text.lower() for w in ("option", "delay", "presence")):
+            _escribiendo_rechazado = True
+            logger.warning("Evolution rechazó las options de 'escribiendo…': se desactivan. El mensaje NO se reintenta.")
         raise RuntimeError(f"Evolution API {r.status_code}: {r.text[:300]}")
     return r.json()
+
+
+def _con_options(opciones: dict) -> dict:
+    return {"options": opciones} if opciones else {}
 
 
 async def _enviar_mensaje(
@@ -127,7 +150,7 @@ async def _enviar_mensaje(
                 f"{EVOLUTION_URL}/message/sendWhatsAppAudio/{instancia}",
                 {
                     "number": destinatario,
-                    "options": {"encoding": True},
+                    "options": {"encoding": True, **_opciones_escribiendo(audio=True)},
                     "audioMessage": {"audio": url_abs},
                 },
                 headers,
@@ -137,7 +160,7 @@ async def _enviar_mensaje(
                     await _post_evolution(
                         client,
                         f"{EVOLUTION_URL}/message/sendText/{instancia}",
-                        {"number": destinatario, "textMessage": {"text": texto}},
+                        {"number": destinatario, "textMessage": {"text": texto}, **_con_options(_opciones_escribiendo())},
                         headers,
                     )
                 except Exception as exc:
@@ -155,7 +178,7 @@ async def _enviar_mensaje(
                 media_message["fileName"] = _nombre_mp4(url_media)
             elif tipo_media == "document":
                 media_message["fileName"], media_message["mimetype"] = _datos_documento(url_media)
-            payload = {"number": destinatario, "mediaMessage": media_message}
+            payload = {"number": destinatario, "mediaMessage": media_message, **_con_options(_opciones_escribiendo())}
             endpoint = f"{EVOLUTION_URL}/message/sendMedia/{instancia}"
             logger.debug(
                 "📤 sendMedia → %s | destinatario=%s | tipo=%s | url=%s",
@@ -165,6 +188,7 @@ async def _enviar_mensaje(
             payload = {
                 "number": destinatario,
                 "textMessage": {"text": texto or ""},
+                **_con_options(_opciones_escribiendo()),
             }
             endpoint = f"{EVOLUTION_URL}/message/sendText/{instancia}"
             logger.debug(
@@ -235,15 +259,14 @@ async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
     """Fase 1 — TOMAR: mide el retraso de cada mensaje vencido-o-por-vencer y lo deja
     'en_cola' (a tiempo) o 'vencido' (no pudo tomarse a tiempo). Devuelve cuántos quedaron en cola."""
     tolerancia = timedelta(minutes=TOLERANCIA_RETRASO_MIN)
-    ventana = ahora + timedelta(seconds=JITTER_MAX)
     filas = (await db.execute(
         select(MensajeProgramado, SesionWhatsApp)
         .outerjoin(SesionWhatsApp, MensajeProgramado.id_sesion == SesionWhatsApp.id_sesion)
         .where(
             MensajeProgramado.estado_envio == "programado",
-            MensajeProgramado.fecha_hora_disparo <= ventana,
+            MensajeProgramado.fecha_hora_disparo <= ahora,       # nunca antes de su hora
         )
-        .order_by(MensajeProgramado.fecha_hora_disparo)
+        .order_by(MensajeProgramado.fecha_hora_disparo, MensajeProgramado.fecha_creacion)
     )).all()
 
     en_cola = 0
@@ -274,9 +297,6 @@ async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
             )
             continue
 
-        if disparo > ahora and (disparo - ahora).total_seconds() > random.uniform(JITTER_MIN, JITTER_MAX):
-            continue    # todavía no es su hora (jitter anti-avalancha)
-
         res = await db.execute(
             update(MensajeProgramado)
             .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "programado")
@@ -287,74 +307,199 @@ async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
     return en_cola
 
 
-async def _enviar_cola(db: AsyncSession) -> None:
-    """Fase 2 — ENVIAR: procesa todo lo que está 'en_cola' (incluido lo que quedó de un ciclo anterior).
-    Lo que entró a la cola a tiempo se envía SIEMPRE, aunque la cola tarde más que la tolerancia."""
-    mensajes = (await db.execute(
-        select(MensajeProgramado)
+# ── Colas por sesión ─────────────────────────────────────────────────────────
+# Cada sesión tiene su propio trabajador (una asyncio.Task) que envía de a uno, con pausa aleatoria entre
+# envíos. Sesiones distintas envían en paralelo. El ciclo de 20 s solo toma mensajes y asegura que cada
+# sesión con mensajes en cola tenga UN trabajador vivo (nunca dos).
+_workers: dict = {}
+_recuperado = False
+
+
+async def _dormir(segundos: float) -> None:
+    """Todas las esperas del envío pasan por aquí (las pruebas la sustituyen para no esperar de verdad)."""
+    await asyncio.sleep(segundos)
+
+
+def pausa_entre_envios(destino: str, rojo: bool) -> float:
+    """Pausa aleatoria (s) tras un envío: 20–45 s a individuales, 8–20 s a grupos; el doble en rojo."""
+    rango = cfg.PAUSA_GRUPO if destino.endswith("@g.us") else cfg.PAUSA_INDIVIDUAL
+    return random.uniform(*rango) * (cfg.MULT_PAUSA_ROJO if rojo else 1)
+
+
+async def _resto_de_pausa_minima(db: AsyncSession, id_sesion) -> float:
+    """Si un trabajador anterior (o el proceso anterior) envió hace poco, cuánto falta para respetar la pausa mínima."""
+    ultimo = (await db.execute(
+        select(func.max(MensajeProgramado.enviado_en)).where(MensajeProgramado.id_sesion == id_sesion)
+    )).scalar_one_or_none()
+    if not ultimo:
+        return 0.0
+    transcurrido = (datetime.now(timezone.utc) - _aware(ultimo)).total_seconds()
+    return max(0.0, min(cfg.PAUSA_GRUPO[0], cfg.PAUSA_INDIVIDUAL[0]) - transcurrido)
+
+
+async def _trabajador_sesion(id_sesion) -> None:
+    """Envía, de a uno y en orden de fecha_hora_disparo, los mensajes 'en_cola' de UNA sesión."""
+    primera = True
+    try:
+        while True:
+            pausa = 0.0
+            async with AsyncSessionFactory() as db:
+                msg = (await db.execute(
+                    select(MensajeProgramado)
+                    .where(MensajeProgramado.id_sesion == id_sesion, MensajeProgramado.estado_envio == "en_cola")
+                    .order_by(MensajeProgramado.fecha_hora_disparo, MensajeProgramado.fecha_creacion)
+                    .limit(1)
+                )).scalar_one_or_none()
+                if msg is None:
+                    return
+                sesion = await db.get(SesionWhatsApp, id_sesion)
+                if not _sesion_utilizable(msg, sesion):
+                    logger.warning("Mensaje %s en cola sin sesión utilizable; se devuelve a programado", msg.id_mensaje)
+                    await db.execute(update(MensajeProgramado).where(MensajeProgramado.id_mensaje == msg.id_mensaje)
+                                     .values(estado_envio="programado", tomado_en=None))
+                    await db.commit()
+                    continue
+
+                if primera:
+                    primera = False
+                    # espera aleatoria antes del primero (siempre DESPUÉS de su hora, nunca antes) y respeta la pausa
+                    # mínima si ya se envió algo hace un instante
+                    espera = max(random.uniform(*cfg.ESPERA_INICIAL_COLA), await _resto_de_pausa_minima(db, id_sesion))
+                    if espera > 0:
+                        await _dormir(espera)
+
+                res = await db.execute(
+                    update(MensajeProgramado)
+                    .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "en_cola")
+                    .values(estado_envio="enviando")
+                )
+                await db.commit()
+                if not res.rowcount:
+                    continue
+
+                try:
+                    resultado = await _enviar_mensaje(
+                        instancia=sesion.instancia_evolution,
+                        destinatario=msg.id_grupo,
+                        texto=msg.texto_mensaje,
+                        tipo_media=msg.tipo_media,
+                        url_media=msg.url_media,
+                        token=sesion.token_autorizacion,
+                    )
+                    logger.info("✅ Enviado %s → %s (sesión %s) resultado: %s",
+                                msg.id_mensaje, msg.id_grupo, sesion.instancia_evolution, str(resultado)[:120])
+                    nuevo_estado, error_envio, enviado_en = "enviado", None, datetime.now(timezone.utc)
+                except Exception as exc:
+                    # Nunca se reintenta: pudo haber salido (un reintento duplicaría el mensaje)
+                    logger.error("❌ Error enviando %s → %s: %s", msg.id_mensaje, msg.id_grupo, exc)
+                    nuevo_estado, error_envio, enviado_en = "fallido", str(exc)[:1000], None
+
+                await db.execute(
+                    update(MensajeProgramado)
+                    .where(MensajeProgramado.id_mensaje == msg.id_mensaje)
+                    .values(estado_envio=nuevo_estado, error_envio=error_envio, enviado_en=enviado_en)
+                )
+                if nuevo_estado == "enviado" and msg.recurrencia != "none":
+                    siguiente = _siguiente_disparo(msg.fecha_hora_disparo, msg.recurrencia)
+                    if siguiente:
+                        _clonar_siguiente(db, msg, siguiente)
+                await db.commit()
+
+                # pausa hasta el siguiente envío de ESTA sesión (el doble si el semáforo está en rojo)
+                rojo = await semaforo.es_rojo(db, id_sesion, sesion.fecha_creacion)
+                pausa = pausa_entre_envios(msg.id_grupo, rojo)
+            await _dormir(pausa)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error("Trabajador de la sesión %s terminó con error: %s: %s", id_sesion, type(exc).__name__, exc)
+    finally:
+        if _workers.get(id_sesion) is asyncio.current_task():
+            _workers.pop(id_sesion, None)
+
+
+async def _asegurar_trabajadores(db: AsyncSession) -> None:
+    """Arranca un trabajador por cada sesión con mensajes en cola que aún no tenga uno vivo."""
+    ids = (await db.execute(
+        select(MensajeProgramado.id_sesion)
         .where(MensajeProgramado.estado_envio == "en_cola", MensajeProgramado.id_sesion.is_not(None))
-        .order_by(MensajeProgramado.fecha_hora_disparo)
+        .distinct()
     )).scalars().all()
-    if not mensajes:
+    for id_sesion in ids:
+        t = _workers.get(id_sesion)
+        if t is None or t.done():
+            _workers[id_sesion] = asyncio.create_task(_trabajador_sesion(id_sesion))
+            logger.info("▶️  Cola de envío iniciada para la sesión %s", id_sesion)
+
+
+async def _esperar_trabajadores() -> None:
+    """Espera a que terminen todos los trabajadores (solo para pruebas)."""
+    while True:
+        vivos = [t for t in _workers.values() if not t.done()]
+        if not vivos:
+            return
+        await asyncio.gather(*vivos, return_exceptions=True)
+
+
+async def _latido(db: AsyncSession, ahora: datetime) -> None:
+    await db.execute(
+        text("INSERT INTO estado_programador (clave, valor) VALUES ('latido', :v) "
+             "ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor"),
+        {"v": ahora},
+    )
+    await db.commit()
+
+
+async def _recuperar_tras_reinicio(db: AsyncSession, ahora: datetime) -> None:
+    """Se ejecuta UNA vez al arrancar el proceso.
+    · 'en_cola' no se pierde ni se duplica: el ciclo normal lo retoma (la transición en_cola→enviando es atómica).
+    · Si el servidor estuvo caído más de CAIDA_LARGA_MIN, lo 'en_cola' ya está viejo: pasa a vencido.
+    · 'enviando' que quedó a medias NO se reenvía (pudo haber salido): pasa a fallido con una explicación."""
+    global _recuperado
+    if _recuperado:
         return
-    logger.info("🗓  %d mensaje(s) en cola", len(mensajes))
+    _recuperado = True
 
-    for msg in mensajes:
-        sesion = await db.get(SesionWhatsApp, msg.id_sesion)
-        if not sesion or not sesion.token_autorizacion:
-            logger.error("Mensaje %s en cola sin sesión utilizable; se devuelve a programado", msg.id_mensaje)
-            await db.execute(update(MensajeProgramado).where(MensajeProgramado.id_mensaje == msg.id_mensaje)
-                             .values(estado_envio="programado", tomado_en=None))
-            await db.commit()
-            continue
+    res = await db.execute(
+        update(MensajeProgramado).where(MensajeProgramado.estado_envio == "enviando")
+        .values(estado_envio="fallido",
+                error_envio="Se interrumpió por un reinicio del servidor mientras se enviaba. No se reenvía solo "
+                            "para no duplicarlo: revisa en WhatsApp si llegó y reprograma si hace falta.")
+    )
+    if res.rowcount:
+        logger.warning("Reinicio: %d mensaje(s) 'enviando' quedaron a medias y se marcaron fallidos (no se reenvían)", res.rowcount)
 
-        res = await db.execute(
-            update(MensajeProgramado)
-            .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "en_cola")
-            .values(estado_envio="enviando")
-        )
-        await db.commit()
-        if not res.rowcount:
-            continue
-
-        try:
-            resultado = await _enviar_mensaje(
-                instancia=sesion.instancia_evolution,
-                destinatario=msg.id_grupo,
-                texto=msg.texto_mensaje,
-                tipo_media=msg.tipo_media,
-                url_media=msg.url_media,
-                token=sesion.token_autorizacion,
-            )
-            logger.info(
-                "✅ Enviado %s → %s (sesión %s) resultado: %s",
-                msg.id_mensaje, msg.id_grupo, sesion.instancia_evolution, str(resultado)[:120],
-            )
-            nuevo_estado, error_envio = "enviado", None
-        except Exception as exc:
-            logger.error("❌ Error enviando %s → %s: %s", msg.id_mensaje, msg.id_grupo, exc)
-            nuevo_estado, error_envio = "fallido", str(exc)[:1000]
-
-        await db.execute(
-            update(MensajeProgramado)
-            .where(MensajeProgramado.id_mensaje == msg.id_mensaje)
-            .values(estado_envio=nuevo_estado, error_envio=error_envio)
-        )
-
-        # Si se envió correctamente y tiene recurrencia, clonar el próximo
-        if nuevo_estado == "enviado" and msg.recurrencia != "none":
-            siguiente = _siguiente_disparo(msg.fecha_hora_disparo, msg.recurrencia)
-            if siguiente:
-                _clonar_siguiente(db, msg, siguiente)
-
-        await db.commit()
+    ultimo = (await db.execute(text("SELECT valor FROM estado_programador WHERE clave = 'latido'"))).scalar_one_or_none()
+    if ultimo and (ahora - _aware(ultimo)) > timedelta(minutes=cfg.CAIDA_LARGA_MIN):
+        inactivo = int((ahora - _aware(ultimo)).total_seconds() // 60)
+        viejos = (await db.execute(
+            select(MensajeProgramado).where(MensajeProgramado.estado_envio == "en_cola")
+        )).scalars().all()
+        for m in viejos:
+            motivo = (f"El servidor estuvo sin actividad unos {inactivo} min; el mensaje ya estaba en cola y su hora "
+                      f"quedó muy atrás. Reprográmalo si todavía hace falta.")
+            await db.execute(update(MensajeProgramado).where(MensajeProgramado.id_mensaje == m.id_mensaje)
+                             .values(estado_envio="vencido", error_envio=motivo))
+            if m.recurrencia and m.recurrencia != "none":
+                siguiente = _proxima_ocurrencia_futura(_aware(m.fecha_hora_disparo), m.recurrencia, ahora)
+                if siguiente:
+                    _clonar_siguiente(db, m, siguiente)
+        if viejos:
+            logger.warning("Reinicio tras %d min sin actividad: %d mensaje(s) en cola pasaron a vencido", inactivo, len(viejos))
+    await db.commit()
 
 
-async def _procesar_mensajes_pendientes() -> None:
+async def _procesar_mensajes_pendientes(esperar: bool = False) -> None:
+    """Ciclo del programador (cada CICLO_SEG): recupera tras un reinicio, toma mensajes y asegura una cola por sesión.
+    No envía: de eso se encargan los trabajadores. `esperar=True` (pruebas) espera a que terminen las colas."""
     ahora = datetime.now(timezone.utc)
     async with AsyncSessionFactory() as db:
+        await _recuperar_tras_reinicio(db, ahora)
         await _tomar_mensajes(db, ahora)
-        await _enviar_cola(db)
+        await _asegurar_trabajadores(db)
+        await _latido(db, ahora)
+    if esperar:
+        await _esperar_trabajadores()
 
 
 async def _limpiar_sesiones_huerfanas() -> None:
@@ -401,7 +546,7 @@ def crear_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         _procesar_mensajes_pendientes,
         trigger="interval",
-        seconds=60,
+        seconds=cfg.CICLO_SEG,
         id="enviar_mensajes",
         replace_existing=True,
         max_instances=1,

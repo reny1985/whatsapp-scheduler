@@ -169,3 +169,4 @@ class MensajeProgramadoRead(ORMBase):
     id_mensaje_origen: uuid.UUID | None
     error_envio: str | None = None
     fecha_creacion: datetime
+    salida_estimada: datetime | None = None   # solo en los 'en_cola': cuándo saldrá aproximadamente

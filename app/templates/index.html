@@ -371,7 +371,7 @@
                   <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                 </svg>
                 <p style="margin:0;color:var(--color-muted);font-size:.85rem">Haz clic para seleccionar imagen, video, audio o documento</p>
-                <p style="margin:4px 0 0;color:var(--color-muted);font-size:.75rem">Máx. 50 MB · JPG/PNG/MP4/MP3/OGG/PDF/DOCX</p>
+                <p style="margin:4px 0 0;color:var(--color-muted);font-size:.75rem">Máx.: imágenes 5 MB · audio y video 16 MB · documentos 25 MB · JPG/PNG/MP4/MP3/OGG/PDF/DOCX</p>
               </div>
               <div id="upload-preview" style="display:none">
                 <div class="upload-preview-inner">
@@ -411,8 +411,10 @@
           <div class="form-group">
             <label class="form-label" for="inp-fecha">Fecha y hora de envío *</label>
             <input id="inp-fecha" type="datetime-local" class="form-control" required />
+            <div id="aviso-escalonado" class="aviso-escalonado" style="display:none" role="status"></div>
             <p style="font-size:.78rem;color:var(--color-muted);margin-top:6px">
-              Zona horaria: Ecuador (UTC-5). Tu mensaje saldrá a la hora programada, con un margen de hasta 1 minuto.
+              Zona horaria: Ecuador (UTC-5). Tu mensaje saldrá a la hora programada (con unos segundos de margen). Si ese
+              número tiene otros mensajes a la misma hora, se envían de a uno, con pausas, para proteger tu número.
             </p>
           </div>
 

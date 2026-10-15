@@ -118,11 +118,11 @@ async def test_revincular_el_mismo_numero_reasigna_los_programados_sin_sesion(mu
 
 async def test_reasignado_antes_de_su_hora_se_envia(mundo, monkeypatch):
     maker, _ = mundo
-    pendiente = await _msg(maker, disparo=datetime.now(timezone.utc) + timedelta(seconds=20))
+    pendiente = await _msg(maker, disparo=datetime.now(timezone.utc) - timedelta(seconds=5))
     await _conectar_nueva_sesion(maker, monkeypatch)
     enviar = AsyncMock(return_value={"key": {"id": "X"}})
-    with patch.object(scheduler, "_enviar_mensaje", new=enviar), patch.object(scheduler.random, "uniform", return_value=59):
-        await scheduler._procesar_mensajes_pendientes()
+    with patch.object(scheduler, "_enviar_mensaje", new=enviar):
+        await scheduler._procesar_mensajes_pendientes(esperar=True)
     assert enviar.await_count == 1 and (await _m(maker, pendiente)).estado_envio == "enviado"
 
 
@@ -130,7 +130,7 @@ async def test_sin_sesion_pasada_su_hora_mas_5_min_queda_vencido(mundo):
     maker, _ = mundo
     mid = await _msg(maker, disparo=datetime.now(timezone.utc) - timedelta(minutes=6))
     with patch.object(scheduler, "_enviar_mensaje", new=AsyncMock()) as enviar:
-        await scheduler._procesar_mensajes_pendientes()
+        await scheduler._procesar_mensajes_pendientes(esperar=True)
     enviar.assert_not_called()
     m = await _m(maker, mid)
     assert m.estado_envio == "vencido" and "eliminada" in m.error_envio
@@ -142,7 +142,7 @@ async def test_la_sesion_de_otro_usuario_no_envia_mensajes_ajenos(mundo):
     ajena = await _sesion(maker, usuario=U2)
     mid = await _msg(maker, sid=ajena, usuario=U1, disparo=datetime.now(timezone.utc) - timedelta(seconds=30))
     with patch.object(scheduler, "_enviar_mensaje", new=AsyncMock()) as enviar:
-        await scheduler._procesar_mensajes_pendientes()
+        await scheduler._procesar_mensajes_pendientes(esperar=True)
     enviar.assert_not_called()
     assert (await _m(maker, mid)).estado_envio == "programado"        # espera (dentro de la tolerancia)
 
