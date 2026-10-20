@@ -4,6 +4,7 @@ Límite de intentos (login en v1.1.0; registro, recuperación y canje después).
 Postgres para que un deploy o un reinicio no la borre. Las claves nunca guardan el correo en claro (sha256).
 """
 import hashlib
+import ipaddress
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
@@ -21,24 +22,20 @@ def clave(accion: str, tipo: str, valor: str) -> str:
     return f"{accion}:{tipo}:{h}"
 
 
-def ip_cliente(request: Request) -> str:
-    """IP del cliente. Railway agrega la IP real al FINAL de X-Forwarded-For; lo que viene antes lo pudo escribir
-    el propio cliente, así que se toma el último valor (no el primero)."""
-    xff = request.headers.get("x-forwarded-for", "")
-    partes = [p.strip() for p in xff.split(",") if p.strip()]
-    if partes:
-        return partes[-1]
-    return request.client.host if request.client else "desconocida"
+def ip_cliente(request: Request) -> str | None:
+    """IP real del cliente, o None si no se puede saber con seguridad.
 
-
-# DIAGNÓSTICO TEMPORAL (solo para averiguar qué encabezado trae la IP real detrás de Railway; se quita después)
-_ENCABEZADOS_PROXY = ("x-forwarded-for", "x-real-ip", "x-envoy-external-address", "forwarded",
-                      "cf-connecting-ip", "true-client-ip", "fastly-client-ip", "x-client-ip")
-
-
-def diagnostico_encabezados(request: Request) -> str:
-    vistos = {h: request.headers.get(h) for h in _ENCABEZADOS_PROXY if request.headers.get(h) is not None}
-    return f"client.host={request.client.host if request.client else None} {vistos}"
+    Se usa X-Real-IP: el proxy de Railway la escribe con la IP de quien se conecta y SOBRESCRIBE la que mande el
+    cliente (comprobado en staging enviando X-Real-IP falsa: llegó la real). No se usa X-Forwarded-For: su último
+    valor es el nodo de borde (CDN), que cambia en cada petición y lo comparten muchos usuarios; otros encabezados
+    (X-Envoy-External-Address, Forwarded, CF-Connecting-IP, True-Client-IP...) llegan tal cual los inventa el
+    cliente. client.host tampoco sirve: es el proxy interno de Railway (100.64.x.x).
+    """
+    valor = (request.headers.get("x-real-ip") or "").strip()
+    try:
+        return str(ipaddress.ip_address(valor))
+    except ValueError:
+        return None
 
 
 async def bloqueado(db: AsyncSession, k: str, maximo: int, ventana: timedelta) -> int:

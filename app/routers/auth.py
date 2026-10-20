@@ -126,10 +126,14 @@ async def login(
     # Límite de intentos: por correo (adivinar una contraseña) y por IP (probar muchos correos)
     ip = intentos.ip_cliente(request)
     k_correo = intentos.clave("login", "correo", payload.email)
-    k_ip = intentos.clave("login", "ip", ip)
+    # Sin IP confiable (no llegó X-Real-IP) no se limita por IP: agrupar a todos bajo una IP del proxy bloquearía
+    # a todos los clientes a la vez. El límite por correo sigue protegiendo cada cuenta.
+    k_ip = intentos.clave("login", "ip", ip) if ip else None
+    if not ip:
+        logger.warning("Login sin X-Real-IP válida: se aplica solo el límite por correo")
     espera = max(
         await intentos.bloqueado(db, k_correo, intentos.LOGIN_MAX_FALLOS_CORREO, intentos.LOGIN_VENTANA),
-        await intentos.bloqueado(db, k_ip, intentos.LOGIN_MAX_FALLOS_IP, intentos.LOGIN_VENTANA),
+        await intentos.bloqueado(db, k_ip, intentos.LOGIN_MAX_FALLOS_IP, intentos.LOGIN_VENTANA) if k_ip else 0,
     )
     if espera:
         logger.warning("Login bloqueado por demasiados intentos (ip=%s, faltan %ss)", ip, espera)
@@ -143,10 +147,10 @@ async def login(
     hash_a_comparar = user.password_hash if user else _HASH_FICTICIO
     if not verify_password(payload.password, hash_a_comparar) or not user:
         await intentos.registrar_fallo(db, k_correo, intentos.LOGIN_VENTANA)
-        await intentos.registrar_fallo(db, k_ip, intentos.LOGIN_VENTANA)
+        if k_ip:
+            await intentos.registrar_fallo(db, k_ip, intentos.LOGIN_VENTANA)
         await db.commit()
-        logger.info("Login fallido (ip=%s)", ip)      # nunca el correo ni la contraseña
-        logger.info("DIAGNÓSTICO IP login: %s", intentos.diagnostico_encabezados(request))   # TEMPORAL
+        logger.info("Login fallido (ip=%s)", ip or "desconocida")      # nunca el correo ni la contraseña
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email o contraseña incorrectos",

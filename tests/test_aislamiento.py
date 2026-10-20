@@ -455,17 +455,49 @@ async def test_login_correcto_limpia_los_fallos_y_el_correo_inexistente_responde
         assert r.status_code == 401 and r.json()["detail"] == "Email o contraseña incorrectos"
 
 
-async def test_login_se_bloquea_por_ip_tras_30_fallos_con_correos_distintos(mundo):
+def _railway(cliente: str, borde: str) -> dict:
+    """Encabezados tal como llegan detrás de Railway (vistos en staging): X-Real-IP = cliente (Railway la
+    sobrescribe), X-Forwarded-For = "cliente, nodo de borde"; el nodo cambia entre peticiones."""
+    return {"x-real-ip": cliente, "x-forwarded-for": f"{cliente}, {borde}"}
+
+
+async def test_login_se_bloquea_por_ip_real_aunque_cambie_el_nodo_de_borde(mundo):
+    bordes = ["79.127.217.66", "152.233.76.9", "152.233.76.10"]
     async with _cliente(None) as c:
-        h = {"x-forwarded-for": "1.1.1.1, 9.9.9.9"}       # cuenta la ÚLTIMA (la que agrega Railway)
         for i in range(intentos.LOGIN_MAX_FALLOS_IP):
-            await c.post("/auth/login", json={"email": f"x{i}@x.com", "password": "mala"}, headers=h)
+            await c.post("/auth/login", json={"email": f"x{i}@x.com", "password": "mala"},
+                         headers=_railway("186.47.74.254", bordes[i % 3]))
         r = await c.post("/auth/login", json={"email": "cliente-b@x.com", "password": "clave-de-B-123"},
-                         headers={"x-forwarded-for": "2.2.2.2, 9.9.9.9"})     # cambiar la primera no evita el bloqueo
-        assert r.status_code == 429
+                         headers=_railway("186.47.74.254", "152.233.23.194"))
+        assert r.status_code == 429                                  # misma IP real, otro nodo: sigue bloqueada
         r = await c.post("/auth/login", json={"email": "cliente-b@x.com", "password": "clave-de-B-123"},
-                         headers={"x-forwarded-for": "8.8.8.8"})
-        assert r.status_code == 200
+                         headers=_railway("200.85.80.199", bordes[0]))
+        assert r.status_code == 200                                  # otro cliente por el MISMO nodo: no le afecta
+
+
+async def test_ip_de_xff_u_otros_encabezados_inventados_no_cuentan():
+    from starlette.requests import Request
+    def req(h):
+        return Request({"type": "http", "headers": [(k.encode(), v.encode()) for k, v in h.items()],
+                        "client": ("100.64.0.2", 1234)})
+    assert intentos.ip_cliente(req(_railway("186.47.74.254", "152.233.76.9"))) == "186.47.74.254"
+    falsos = {"x-forwarded-for": "6.6.6.6", "x-envoy-external-address": "8.8.4.4", "forwarded": "for=4.4.4.4",
+              "cf-connecting-ip": "5.5.5.5", "true-client-ip": "9.9.9.9"}
+    assert intentos.ip_cliente(req(falsos)) is None                  # sin X-Real-IP: ninguno se usa (ni client.host)
+    assert intentos.ip_cliente(req({"x-real-ip": "no-es-una-ip"})) is None
+
+
+async def test_sin_x_real_ip_no_se_limita_por_ip_pero_si_por_correo(mundo, caplog):
+    async with _cliente(None) as c:                                  # sin encabezados de proxy
+        for i in range(intentos.LOGIN_MAX_FALLOS_IP + 5):
+            await c.post("/auth/login", json={"email": f"y{i}@x.com", "password": "mala"})
+        r = await c.post("/auth/login", json={"email": "cliente-b@x.com", "password": "clave-de-B-123"})
+        assert r.status_code == 200                                  # nadie queda bloqueado por una IP compartida
+        for _ in range(intentos.LOGIN_MAX_FALLOS_CORREO):
+            await c.post("/auth/login", json={"email": "duena-a@x.com", "password": "mala"})
+        r = await c.post("/auth/login", json={"email": "duena-a@x.com", "password": "clave-de-A-123"})
+        assert r.status_code == 429                                  # el límite por correo sigue funcionando
+    assert "sin X-Real-IP" in caplog.text
 
 
 async def test_subir_version_token_cierra_las_sesiones_abiertas(mundo):
