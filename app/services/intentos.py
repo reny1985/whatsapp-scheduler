@@ -31,6 +31,16 @@ def ip_cliente(request: Request) -> str:
     return request.client.host if request.client else "desconocida"
 
 
+# DIAGNÓSTICO TEMPORAL (solo para averiguar qué encabezado trae la IP real detrás de Railway; se quita después)
+_ENCABEZADOS_PROXY = ("x-forwarded-for", "x-real-ip", "x-envoy-external-address", "forwarded",
+                      "cf-connecting-ip", "true-client-ip", "fastly-client-ip", "x-client-ip")
+
+
+def diagnostico_encabezados(request: Request) -> str:
+    vistos = {h: request.headers.get(h) for h in _ENCABEZADOS_PROXY if request.headers.get(h) is not None}
+    return f"client.host={request.client.host if request.client else None} {vistos}"
+
+
 async def bloqueado(db: AsyncSession, k: str, maximo: int, ventana: timedelta) -> int:
     """Segundos que faltan para poder intentar de nuevo (0 = no está bloqueado)."""
     fila = (await db.execute(

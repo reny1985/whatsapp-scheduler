@@ -146,6 +146,7 @@ async def login(
         await intentos.registrar_fallo(db, k_ip, intentos.LOGIN_VENTANA)
         await db.commit()
         logger.info("Login fallido (ip=%s)", ip)      # nunca el correo ni la contraseña
+        logger.info("DIAGNÓSTICO IP login: %s", intentos.diagnostico_encabezados(request))   # TEMPORAL
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email o contraseña incorrectos",
