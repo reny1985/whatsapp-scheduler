@@ -20,6 +20,7 @@ NUMERO_EC = '593969829845'
 def _admin():
     u = MagicMock()
     u.id_usuario = uuid.UUID('00000000-0000-0000-0000-000000000001')
+    u.id_cuenta = uuid.UUID('00000000-0000-0000-0000-000000000001')
     u.rol = 'admin'
     return u
 

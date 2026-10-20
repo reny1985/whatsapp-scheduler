@@ -23,6 +23,7 @@ FUTURO = datetime.now(timezone.utc) + timedelta(hours=2)
 def _usuario_mock():
     u = MagicMock()
     u.id_usuario = USUARIO_ID
+    u.id_cuenta = USUARIO_ID          # la cuenta interna …0001 tiene el mismo UUID que el usuario piloto
     u.email = 'test@test.com'
     u.rol = 'admin'
     u.estado_suscripcion = 'activa'
@@ -36,6 +37,7 @@ def _sesion_mock():
     s.estado_conexion = 'conectado'
     s.token_autorizacion = 'test-token'
     s.id_usuario = USUARIO_ID
+    s.id_cuenta = USUARIO_ID
     return s
 
 

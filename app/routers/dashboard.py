@@ -2,8 +2,8 @@
 routers/dashboard.py
 Resumen de la pantalla de Inicio en una sola respuesta.
 
-Cuatro consultas agregadas (no una por mensaje), todas filtradas por mensajes_programados.id_usuario (el dueño
-del mensaje, que no depende de la sesión), y con "hoy" / "este mes" calculados en America/Guayaquil dentro de
+Cuatro consultas agregadas (no una por mensaje), todas filtradas por la CUENTA (mensajes_programados.id_cuenta,
+que no depende de la sesión), y con "hoy" / "este mes" calculados en America/Guayaquil dentro de
 Postgres. Los mensajes sin sesión (su número se eliminó) SÍ se cuentan y se señalan aparte.
 """
 from fastapi import APIRouter, Depends
@@ -54,7 +54,7 @@ _SQL_TARJETAS = text("""
         SELECT m.*, s.estado_conexion AS estado_sesion
         FROM mensajes_programados m
         LEFT JOIN sesiones_whatsapp s ON s.id_sesion = m.id_sesion
-        WHERE m.id_usuario = :uid
+        WHERE m.id_cuenta = :cid
     ) m ON TRUE
     GROUP BY t.ahora
 """)
@@ -65,7 +65,7 @@ _SQL_SIETE_DIAS = text("""
     msgs AS (
         SELECT (m.fecha_hora_disparo AT TIME ZONE CAST(:tz AS text))::date AS fecha, m.estado_envio
         FROM mensajes_programados m
-        WHERE m.id_usuario = :uid
+        WHERE m.id_cuenta = :cid
           AND m.estado_envio IN ('enviado', 'fallido')
           AND m.fecha_hora_disparo >= (((SELECT hoy FROM h) - 6)::timestamp AT TIME ZONE CAST(:tz AS text))
     )
@@ -87,10 +87,10 @@ _SQL_PROXIMOS = text("""
         SELECT gg.subject
         FROM grupos_whatsapp gg
         JOIN sesiones_whatsapp ss ON ss.id_sesion = gg.id_sesion
-        WHERE ss.id_usuario = m.id_usuario AND gg.id_grupo = m.id_grupo
+        WHERE ss.id_cuenta = m.id_cuenta AND gg.id_grupo = m.id_grupo
         LIMIT 1
     ) g ON TRUE
-    WHERE m.id_usuario = :uid
+    WHERE m.id_cuenta = :cid
       AND m.estado_envio IN ('programado', 'en_cola', 'enviando')
     ORDER BY m.fecha_hora_disparo ASC
     LIMIT :limite
@@ -99,7 +99,7 @@ _SQL_PROXIMOS = text("""
 _SQL_SESIONES = text("""
     SELECT id_sesion, nombre_sesion, numero_telefono, estado_conexion, perfil_nombre, perfil_foto_en, fecha_creacion
     FROM sesiones_whatsapp
-    WHERE id_usuario = :uid
+    WHERE id_cuenta = :cid
     ORDER BY fecha_creacion
 """)
 
@@ -117,13 +117,13 @@ async def resumen(
     db: AsyncSession = Depends(get_db),
     usuario: Usuario = Depends(get_current_user),
 ):
-    uid = usuario.id_usuario
+    cid = usuario.id_cuenta
     tz = ZONA
 
-    t = (await db.execute(_SQL_TARJETAS, {"tz": tz, "uid": uid})).mappings().one()
-    dias = (await db.execute(_SQL_SIETE_DIAS, {"tz": tz, "uid": uid})).mappings().all()
-    proximos = (await db.execute(_SQL_PROXIMOS, {"uid": uid, "limite": PROXIMOS_LIMITE})).mappings().all()
-    sesiones = (await db.execute(_SQL_SESIONES, {"uid": uid})).mappings().all()
+    t = (await db.execute(_SQL_TARJETAS, {"tz": tz, "cid": cid})).mappings().one()
+    dias = (await db.execute(_SQL_SIETE_DIAS, {"tz": tz, "cid": cid})).mappings().all()
+    proximos = (await db.execute(_SQL_PROXIMOS, {"cid": cid, "limite": PROXIMOS_LIMITE})).mappings().all()
+    sesiones = (await db.execute(_SQL_SESIONES, {"cid": cid})).mappings().all()
 
     # Semáforo anti-spam de cada número (se calcula al vuelo; nunca cancela ni borra mensajes)
     semaforos = {s["id_sesion"]: await semaforo.calcular(db, s["id_sesion"], s["fecha_creacion"]) for s in sesiones}

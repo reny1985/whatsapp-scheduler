@@ -4,12 +4,15 @@ Requieren ffmpeg/ffprobe instalados. No tocan Evolution API real.
 """
 import json
 import subprocess
+import uuid
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from httpx import AsyncClient, ASGITransport
 
 from app import scheduler
+from app.auth import require_admin
 from app.main import app
 from app.routers import media
 
@@ -43,10 +46,18 @@ def muestras(tmp_path_factory):
     return d
 
 
+CUENTA = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
 @pytest.fixture
 def uploads(tmp_path, monkeypatch):
+    """Subir exige login; cada cuenta guarda en <UPLOAD_DIR>/<id_cuenta>/ (devuelve esa carpeta)."""
     monkeypatch.setattr(media, "UPLOAD_DIR", tmp_path)
-    return tmp_path
+    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=CUENTA, id_cuenta=CUENTA)
+    carpeta = tmp_path / str(CUENTA)
+    carpeta.mkdir()
+    yield carpeta
+    app.dependency_overrides.pop(require_admin, None)
 
 
 async def _subir(path, nombre, content_type):

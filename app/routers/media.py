@@ -9,9 +9,11 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app import envio_config as cfg
+from app.auth import require_admin
+from app.models import Usuario
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -107,15 +109,15 @@ def _error_conversion(tipo_media: str, detalle: str) -> HTTPException:
     )
 
 
-async def _convertir_media(contenido: bytes, tipo_media: str, ext: str, unico: str) -> str:
-    """Convierte audio → .ogg (Opus) o video → .mp4 (H.264+AAC). Devuelve el nombre final.
+async def _convertir_media(contenido: bytes, tipo_media: str, ext: str, unico: str, carpeta: Path = UPLOAD_DIR) -> str:
+    """Convierte audio → .ogg (Opus) o video → .mp4 (H.264+AAC) dentro de `carpeta`. Devuelve el nombre final.
 
     Escribe el original en un temporal que siempre se borra. Si ffmpeg falla,
     no queda nada guardado y se lanza HTTPException.
     """
     salida_ext = ".ogg" if tipo_media == "audio" else ".mp4"
-    entrada = UPLOAD_DIR / f".{unico}.orig{ext or '.bin'}"
-    destino = UPLOAD_DIR / f"{unico}{salida_ext}"
+    entrada = carpeta / f".{unico}.orig{ext or '.bin'}"
+    destino = carpeta / f"{unico}{salida_ext}"
     args = FFMPEG_AUDIO_ARGS if tipo_media == "audio" else FFMPEG_VIDEO_ARGS
     try:
         entrada.write_bytes(contenido)
@@ -155,7 +157,9 @@ router = APIRouter(prefix="/media", tags=["media"])
 
 
 @router.post("/subir", status_code=status.HTTP_201_CREATED)
-async def subir_archivo(file: UploadFile = File(...)):
+async def subir_archivo(file: UploadFile = File(...), usuario: Usuario = Depends(require_admin)):
+    """Exige login. Cada cuenta guarda sus adjuntos en <UPLOAD_DIR>/<id_cuenta>/ (los anteriores a v1.1.0 siguen en
+    la raíz y siguen funcionando). Un mensaje solo acepta adjuntos de su cuenta (ver aislamiento.validar_adjunto)."""
     content_type = file.content_type or ""
     if not content_type or content_type == "application/octet-stream":
         nombre_ext = Path(file.filename or "").suffix.lower()
@@ -194,23 +198,27 @@ async def subir_archivo(file: UploadFile = File(...)):
     if not ext and tipo_media == "document":
         ext = next((e for e, m in DOC_EXT_MIME.items() if m == base_ct), "")
     ext = ext or mimetypes.guess_extension(base_ct) or ""
+    # Sin separadores de ruta en el nombre (el original lo eligió el cliente)
+    original_stem = original_stem.replace("/", "_").replace("\\", "_")
     unico = f"{uuid.uuid4().hex}_{original_stem[:40]}"
+    carpeta = UPLOAD_DIR / str(usuario.id_cuenta)
+    carpeta.mkdir(parents=True, exist_ok=True)
 
     if tipo_media in ("audio", "video"):
         # Todo audio/video se recodifica; el original nunca se guarda.
-        nombre_unico = await _convertir_media(contenido, tipo_media, ext, unico)
-        peso_final = (UPLOAD_DIR / nombre_unico).stat().st_size
+        nombre_unico = await _convertir_media(contenido, tipo_media, ext, unico, carpeta)
+        peso_final = (carpeta / nombre_unico).stat().st_size
         if peso_final > cfg.LIMITE_MB[tipo_media] * 1024 * 1024:
-            (UPLOAD_DIR / nombre_unico).unlink(missing_ok=True)       # no queda guardado
+            (carpeta / nombre_unico).unlink(missing_ok=True)       # no queda guardado
             raise _error_peso(tipo_media, peso_final, convertido=True)
     else:
         nombre_unico = f"{unico}{ext}"
-        (UPLOAD_DIR / nombre_unico).write_bytes(contenido)
+        (carpeta / nombre_unico).write_bytes(contenido)
 
     logger.info("Archivo subido: %s (%s, %d bytes)", nombre_unico, content_type, len(contenido))
 
     return {
-        "url": f"/static/uploads/{nombre_unico}",
+        "url": f"/static/uploads/{usuario.id_cuenta}/{nombre_unico}",
         "tipo_media": tipo_media,
         "nombre_original": file.filename,
         "bytes": len(contenido),

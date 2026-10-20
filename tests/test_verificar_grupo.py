@@ -18,6 +18,7 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 SID = uuid.UUID("00000000-0000-0000-0000-000000000030")
 MI = "593961409996"
+CUENTA = uuid.UUID("00000000-0000-0000-0000-000000000001")
 JID = "120363406271783192@g.us"
 TOKEN_INSTANCIA = "token-secreto-instancia"
 
@@ -39,6 +40,7 @@ class _DB:
         s = MagicMock()
         s.id_sesion, s.instancia_evolution, s.estado_conexion = SID, "wa-test", self.estado
         s.token_autorizacion, s.numero_telefono = TOKEN_INSTANCIA, MI
+        s.id_cuenta = CUENTA
         return s
 
     async def execute(self, stmt, *a, **k):
@@ -68,7 +70,7 @@ class _FakeClient:
 def api(monkeypatch):
     _FakeClient.respuesta, _FakeClient.excepcion, _FakeClient.llamadas = (200, {}), None, []
     monkeypatch.setattr(sesiones.httpx, "AsyncClient", _FakeClient)
-    app.dependency_overrides[get_current_user] = lambda: MagicMock()
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_cuenta=CUENTA)
 
     async def _llamar(db, path):
         app.dependency_overrides[get_db] = lambda: db

@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,8 +21,9 @@ from app.auth import (
     verify_password,
 )
 from app.database import get_db
-from app.models import Usuario
+from app.models import CUENTA_INTERNA_ID, Usuario
 from app.schemas import PILOTO_ID_USUARIO
+from app.services import intentos
 
 logger = logging.getLogger("whatsapp_scheduler")
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -32,6 +33,8 @@ RESEND_FROM    = os.getenv("RESEND_FROM", "Enviafast <no-reply@enviafast.net>")
 APP_NAME       = "Enviafast"   # nombre visible en asunto y cuerpo del correo
 RESEND_TIMEOUT = httpx.Timeout(10.0)
 MSG_ERROR_CORREO = "No pudimos enviar el correo, intenta de nuevo en unos minutos"
+# Hash de una contraseña que nadie conoce: el login lo compara cuando el correo no existe (mismo tiempo de respuesta)
+_HASH_FICTICIO = hash_password(os.urandom(16).hex())
 
 
 class EnvioCorreoError(Exception):
@@ -116,17 +119,40 @@ class VerificarCodigoRequest(BaseModel):
 @router.post("/login")
 async def login(
     payload: LoginRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
+    # Límite de intentos: por correo (adivinar una contraseña) y por IP (probar muchos correos)
+    ip = intentos.ip_cliente(request)
+    k_correo = intentos.clave("login", "correo", payload.email)
+    k_ip = intentos.clave("login", "ip", ip)
+    espera = max(
+        await intentos.bloqueado(db, k_correo, intentos.LOGIN_MAX_FALLOS_CORREO, intentos.LOGIN_VENTANA),
+        await intentos.bloqueado(db, k_ip, intentos.LOGIN_MAX_FALLOS_IP, intentos.LOGIN_VENTANA),
+    )
+    if espera:
+        logger.warning("Login bloqueado por demasiados intentos (ip=%s, faltan %ss)", ip, espera)
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail=intentos.mensaje_espera(espera), headers={"Retry-After": str(espera)})
+
     res = await db.execute(select(Usuario).where(Usuario.email == payload.email))
     user = res.scalar_one_or_none()
 
-    if not user or not verify_password(payload.password, user.password_hash):
+    # Si el correo no existe se compara igual contra un hash, para no revelar por el tiempo de respuesta si existe
+    hash_a_comparar = user.password_hash if user else _HASH_FICTICIO
+    if not verify_password(payload.password, hash_a_comparar) or not user:
+        await intentos.registrar_fallo(db, k_correo, intentos.LOGIN_VENTANA)
+        await intentos.registrar_fallo(db, k_ip, intentos.LOGIN_VENTANA)
+        await db.commit()
+        logger.info("Login fallido (ip=%s)", ip)      # nunca el correo ni la contraseña
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email o contraseña incorrectos",
         )
+
+    await intentos.limpiar(db, k_correo)
+    await db.commit()
 
     if not user.email_verificado:
         raise HTTPException(
@@ -134,7 +160,7 @@ async def login(
             detail="email_no_verificado",
         )
 
-    token = create_access_token(user.id_usuario, user.rol)
+    token = create_access_token(user.id_usuario, user.rol, user.version_token)
     response.set_cookie(
         key="access_token",
         value=token,
@@ -198,6 +224,7 @@ async def setup(payload: SetupRequest, db: AsyncSession = Depends(get_db)):
     else:
         user = Usuario(
             id_usuario=PILOTO_ID_USUARIO,
+            id_cuenta=CUENTA_INTERNA_ID,
             email=payload.email,
             password_hash=hash_password(payload.password),
             rol="admin",
@@ -282,7 +309,7 @@ async def verificar_codigo(
 
     if user.email_verificado:
         # Ya verificado, hacer login directo
-        token = create_access_token(user.id_usuario, user.rol)
+        token = create_access_token(user.id_usuario, user.rol, user.version_token)
         response.set_cookie(
             key="access_token", value=token, httponly=True, samesite="lax",
             max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
@@ -306,7 +333,7 @@ async def verificar_codigo(
     user.codigo_expira_en    = None
     await db.commit()
 
-    token = create_access_token(user.id_usuario, user.rol)
+    token = create_access_token(user.id_usuario, user.rol, user.version_token)
     response.set_cookie(
         key="access_token", value=token, httponly=True, samesite="lax",
         max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
