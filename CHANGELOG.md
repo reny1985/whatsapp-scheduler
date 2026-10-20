@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0 — 2026-10-20 — Cuentas separadas y aislamiento total (en staging)
+## v1.1.0 — 2026-10-20 — Cuentas separadas y aislamiento total
 
 Primera de las cuatro entregas para vender (v1.1.1 panel de superadministrador, v1.1.2 registro y planes, v1.1.3 códigos de regalo). Sin cambios visibles para el usuario.
 

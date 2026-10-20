@@ -1,15 +1,15 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-20 (v1.1.0 en staging)
+Última actualización: 2026-10-20 (v1.1.0 en production)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.8**, sobre `main`. **v1.1.0 (cuentas y aislamiento) está en staging**, rama `registro` (sin merge). 298 pruebas automáticas pasan.
+**Production (`https://enviafast.net`) corre v1.1.0**, sobre `main` (etiqueta `v1.1.0`). 300 pruebas automáticas pasan.
 
-- **v1.1.0** — cuentas separadas y aislamiento total (en staging, sin cambios visibles):
+- **v1.1.0** — cuentas separadas y aislamiento total (sin cambios visibles):
   - Tabla `cuentas`; usuarios, sesiones, mensajes y plantillas con `id_cuenta` NOT NULL. Todo lo existente pasa a la cuenta interna …0001 (Enterprise, sin vencimiento); el usuario …0001 es el único superadministrador.
   - Todo id del cliente se busca con la cuenta de quien pide (404 si es ajeno); candados en la BD (trigger + FK compuesta). Prueba guardiana: toda ruta nueva debe declararse en `tests/test_aislamiento.py`.
-  - Webhook con secreto por sesión; la ruta vieja atiende cada sesión hasta confirmar la nueva. Adjuntos nuevos en `uploads/<id_cuenta>/`. `version_token` en el JWT. Límite de intentos en el login.
+  - Webhook con secreto por sesión; la ruta vieja atiende cada sesión hasta confirmar la nueva. Adjuntos nuevos en `uploads/<id_cuenta>/`. `version_token` en el JWT. Límite de intentos en el login (5 por correo / 30 por IP en 15 min; la IP sale de `X-Real-IP`, que Railway sobrescribe).
   - Ensayo de la migración: `scripts/ensayo_migracion.sh <respaldo>` (copia local, foto antes/después, rollback, borra la copia). Volver atrás: `scripts/rollback_v1.1.0.sql`.
 
 - **v1.0.8** — envío escalonado y protección del número:
@@ -78,7 +78,7 @@
 - Respaldos de production en `~/Desktop/Respaldos_Enviafast/` (se usa `pg_dump` 18 de Homebrew).
 
 ## Plan de entregas para vender
-1. **v1.1.0** — cuentas, migración y aislamiento (en staging).
+1. ✅ **v1.1.0** — cuentas, migración y aislamiento (en production desde 2026-10-20).
 2. **v1.1.1** — panel de superadministrador (cuentas, cambiar plan, extender prueba, activar 30 días, suspender/reactivar, auditoría; sin ver contenido de mensajes).
 3. **v1.1.2** — registro abierto, verificación, recuperación, prueba de 7 días, límites por plan, "Mi plan", banners y vencimientos. Retirar `/auth/setup` (hoy público mientras el piloto no está configurado) y aplicar límite de intentos a la verificación por código.
 4. **v1.1.3** — códigos de regalo.
