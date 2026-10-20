@@ -196,7 +196,7 @@ async def test_nombre_se_limpia(mundo):
 
 async def _get(maker, path, usuario=U1, autenticado=True):
     if autenticado:
-        app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=usuario)
+        app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=usuario, id_cuenta=usuario)
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -271,7 +271,7 @@ async def test_verificar_pide_el_perfil_solo_si_esta_conectada(mundo, monkeypatc
     monkeypatch.setattr(sesiones.perfil, "actualizar_perfil_si_corresponde", pedido)
     monkeypatch.setattr(sesiones, "_evo_get", AsyncMock(return_value={"instance": {"state": "open"}}))
     monkeypatch.setattr(sesiones, "_obtener_numero_instancia", AsyncMock(return_value="593961409996"))
-    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
     r = await _get(mundo, f"/sesiones/{sid}/verificar")
     assert r.status_code == 200
     pedido.assert_awaited_once_with(sid)

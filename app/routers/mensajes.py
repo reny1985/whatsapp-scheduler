@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.aislamiento import mensaje_de_la_cuenta, sesion_de_la_cuenta, validar_adjunto
 from app.auth import get_current_user, require_admin
 from app.database import get_db
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario
@@ -21,26 +22,9 @@ class ReasignarRequest(BaseModel):
     id_sesion: uuid.UUID
 
 
-async def _sesion_del_usuario(db: AsyncSession, id_sesion: uuid.UUID, usuario: Usuario) -> SesionWhatsApp:
-    res = await db.execute(
-        select(SesionWhatsApp).where(SesionWhatsApp.id_sesion == id_sesion,
-                                     SesionWhatsApp.id_usuario == usuario.id_usuario)
-    )
-    sesion = res.scalar_one_or_none()
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    return sesion
-
-
-async def _mensaje_del_usuario(db: AsyncSession, id_mensaje: uuid.UUID, usuario: Usuario) -> MensajeProgramado:
-    res = await db.execute(
-        select(MensajeProgramado).where(MensajeProgramado.id_mensaje == id_mensaje,
-                                        MensajeProgramado.id_usuario == usuario.id_usuario)
-    )
-    mensaje = res.scalar_one_or_none()
-    if not mensaje:
-        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
-    return mensaje
+# Todo id que llega del cliente se busca junto con la cuenta de quien pide (404 si es de otra cuenta)
+_sesion_del_usuario = sesion_de_la_cuenta
+_mensaje_del_usuario = mensaje_de_la_cuenta
 
 
 @router.post("/", response_model=MensajeProgramadoRead, status_code=status.HTTP_201_CREATED)
@@ -58,6 +42,7 @@ async def programar_mensaje(
                    f"para que salga de inmediato.",
         )
     sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
+    await validar_adjunto(db, payload.url_media, usuario)
 
     datos = payload.model_dump(exclude={'forzar'})
     if datos["fecha_hora_disparo"] <= ahora:
@@ -66,7 +51,8 @@ async def programar_mensaje(
         datos["fecha_hora_disparo"] = ahora
     # El mensaje es del USUARIO (no de la sesión) y recuerda con qué número se programó: si la sesión se
     # borra y se vuelve a vincular el mismo número, se reasigna solo.
-    mensaje = MensajeProgramado(**datos, id_usuario=usuario.id_usuario, numero_origen=sesion.numero_telefono)
+    mensaje = MensajeProgramado(**datos, id_usuario=usuario.id_usuario, id_cuenta=usuario.id_cuenta,
+                                numero_origen=sesion.numero_telefono)
     db.add(mensaje)
     await db.commit()
     await db.refresh(mensaje)
@@ -81,7 +67,7 @@ async def stats_mensajes(
     usuario: Usuario = Depends(get_current_user),
 ):
     res = await db.execute(select(MensajeProgramado.estado_envio, func.count())
-                           .where(MensajeProgramado.id_usuario == usuario.id_usuario)
+                           .where(MensajeProgramado.id_cuenta == usuario.id_cuenta)
                            .group_by(MensajeProgramado.estado_envio))
     conteos = dict(res.all())
     enviados = conteos.get("enviado", 0)
@@ -114,12 +100,12 @@ async def historial_mensajes(
                 COUNT(*) FILTER (WHERE estado_envio = 'fallido')  AS fallidos
             FROM mensajes_programados
             WHERE fecha_hora_disparo >= :desde
-              AND id_usuario = :uid
+              AND id_cuenta = :cid
               AND estado_envio IN ('enviado', 'fallido')
             GROUP BY fecha
             ORDER BY fecha ASC
         """),
-        {"desde": desde, "uid": usuario.id_usuario},
+        {"desde": desde, "cid": usuario.id_cuenta},
     )
     return [{"fecha": str(r.fecha), "enviados": r.enviados, "fallidos": r.fallidos}
             for r in res.fetchall()]
@@ -134,7 +120,7 @@ async def proximos_mensajes(
     """Próximos mensajes programados (para el panel del dashboard)."""
     res = await db.execute(
         select(MensajeProgramado)
-        .where(MensajeProgramado.id_usuario == usuario.id_usuario,
+        .where(MensajeProgramado.id_cuenta == usuario.id_cuenta,
                MensajeProgramado.estado_envio == "programado")
         .order_by(MensajeProgramado.fecha_hora_disparo.asc())
         .limit(limite)
@@ -151,7 +137,7 @@ async def mensajes_recientes(
     """Últimos mensajes enviados o fallidos (para el panel del dashboard)."""
     res = await db.execute(
         select(MensajeProgramado)
-        .where(MensajeProgramado.id_usuario == usuario.id_usuario,
+        .where(MensajeProgramado.id_cuenta == usuario.id_cuenta,
                MensajeProgramado.estado_envio.in_(["enviado", "fallido"]))
         .order_by(MensajeProgramado.fecha_hora_disparo.desc())
         .limit(limite)
@@ -168,7 +154,7 @@ async def conteo_sin_sesion(
     si se vuelve a vincular el mismo número se reasignan solos; si no, pasan a vencidos."""
     res = await db.execute(
         select(MensajeProgramado.estado_envio, func.count())
-        .where(MensajeProgramado.id_usuario == usuario.id_usuario, MensajeProgramado.id_sesion.is_(None))
+        .where(MensajeProgramado.id_cuenta == usuario.id_cuenta, MensajeProgramado.id_sesion.is_(None))
         .group_by(MensajeProgramado.estado_envio)
     )
     c = dict(res.all())
@@ -185,7 +171,7 @@ async def reasignar_todos_sin_sesion(
     sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
     res = await db.execute(
         update(MensajeProgramado)
-        .where(MensajeProgramado.id_usuario == usuario.id_usuario,
+        .where(MensajeProgramado.id_cuenta == usuario.id_cuenta,
                MensajeProgramado.id_sesion.is_(None),
                MensajeProgramado.estado_envio == "programado")
         .values(id_sesion=sesion.id_sesion, numero_origen=sesion.numero_telefono)
@@ -226,7 +212,7 @@ async def listar_mensajes(
     usuario: Usuario = Depends(get_current_user),
 ):
     q = (select(MensajeProgramado)
-         .where(MensajeProgramado.id_usuario == usuario.id_usuario)
+         .where(MensajeProgramado.id_cuenta == usuario.id_cuenta)
          .order_by(MensajeProgramado.fecha_hora_disparo.desc()))
     if estado:
         q = q.where(MensajeProgramado.estado_envio == estado)
@@ -297,6 +283,9 @@ async def editar_mensaje(
     if mensaje.estado_envio != "programado":
         raise HTTPException(status_code=409,
                             detail=f"Solo se pueden editar mensajes con estado 'programado'")
+    cambios = payload.model_dump(exclude_unset=True)
+    if cambios.get("url_media") and cambios["url_media"] != mensaje.url_media:
+        await validar_adjunto(db, cambios["url_media"], usuario)
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(mensaje, key, value)
     await db.commit()

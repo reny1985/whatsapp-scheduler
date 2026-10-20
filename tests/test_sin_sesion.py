@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app import scheduler
 from app.auth import get_current_user, require_admin
@@ -45,8 +46,10 @@ def mundo(Session, monkeypatch):
 
 async def _usuario2(maker):
     async with maker() as db:
-        await db.execute(text("INSERT INTO usuarios (id_usuario, email, password_hash, rol, email_verificado) "
-                              "VALUES (:u, 'otro@x.com', 'x', 'admin', true) ON CONFLICT DO NOTHING"), {"u": U2})
+        # el otro usuario es de OTRA cuenta (su cuenta usa el mismo UUID que él)
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado) VALUES (:u, 'activa') ON CONFLICT DO NOTHING"), {"u": U2})
+        await db.execute(text("INSERT INTO usuarios (id_usuario, email, password_hash, rol, email_verificado, id_cuenta) "
+                              "VALUES (:u, 'otro@x.com', 'x', 'admin', true, :u) ON CONFLICT DO NOTHING"), {"u": U2})
         await db.commit()
 
 
@@ -136,22 +139,21 @@ async def test_sin_sesion_pasada_su_hora_mas_5_min_queda_vencido(mundo):
     assert m.estado_envio == "vencido" and "eliminada" in m.error_envio
 
 
-async def test_la_sesion_de_otro_usuario_no_envia_mensajes_ajenos(mundo):
+async def test_la_sesion_de_otra_cuenta_no_puede_tener_mensajes_ajenos(mundo):
+    """v1.1.0: un mensaje de una cuenta con la sesión de OTRA cuenta ni siquiera puede existir (lo rechaza la BD),
+    así que el programador nunca podría enviarlo por un número ajeno."""
     maker, _ = mundo
     await _usuario2(maker)
     ajena = await _sesion(maker, usuario=U2)
-    mid = await _msg(maker, sid=ajena, usuario=U1, disparo=datetime.now(timezone.utc) - timedelta(seconds=30))
-    with patch.object(scheduler, "_enviar_mensaje", new=AsyncMock()) as enviar:
-        await scheduler._procesar_mensajes_pendientes(esperar=True)
-    enviar.assert_not_called()
-    assert (await _m(maker, mid)).estado_envio == "programado"        # espera (dentro de la tolerancia)
+    with pytest.raises(IntegrityError):
+        await _msg(maker, sid=ajena, usuario=U1, disparo=datetime.now(timezone.utc) - timedelta(seconds=30))
 
 
 # ── Inicio y Mensajes cuentan y muestran los sin sesión ──────────────────────
 
 async def _api(maker, metodo, ruta, usuario=U1, json=None):
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=usuario)
-    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=usuario)
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=usuario, id_cuenta=usuario)
+    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=usuario, id_cuenta=usuario)
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -374,11 +376,14 @@ async def test_migracion_de_id_usuario_es_idempotente_y_no_borra_datos(Session):
     engine = Session.kw["bind"]
     sid = uuid.uuid4()
     async with Session() as db:
-        await db.execute(text("INSERT INTO usuarios (id_usuario, email, password_hash, rol, email_verificado) VALUES (:u,'otro@x.com','x','admin',true)"), {"u": U2})
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado) VALUES (:u, 'activa')"), {"u": U2})
+        await db.execute(text("INSERT INTO usuarios (id_usuario, email, password_hash, rol, email_verificado, id_cuenta) VALUES (:u,'otro@x.com','x','admin',true,:u)"), {"u": U2})
         await db.execute(text("INSERT INTO sesiones_whatsapp (id_sesion,id_usuario,instancia_evolution,estado_conexion,numero_telefono) VALUES (:s,:u,'wa-a','conectado',:n)"),
                          {"s": sid, "u": U2, "n": NUM})
         await db.commit()
-    async with engine.begin() as conn:      # deja el esquema como estaba ANTES de esta versión
+    async with engine.begin() as conn:      # deja el esquema como estaba ANTES de esta versión (y de v1.1.0)
+        await conn.execute(text("DROP TRIGGER trg_cuenta_mensajes ON mensajes_programados"))
+        await conn.execute(text("ALTER TABLE mensajes_programados DROP COLUMN id_cuenta"))
         await conn.execute(text("ALTER TABLE mensajes_programados DROP COLUMN id_usuario"))
         await conn.execute(text("ALTER TABLE mensajes_programados DROP COLUMN numero_origen"))
     ids = [uuid.uuid4() for _ in range(3)]
@@ -394,7 +399,7 @@ async def test_migracion_de_id_usuario_es_idempotente_y_no_borra_datos(Session):
     await run_migrations(engine)            # idempotente
     async with Session() as db:
         despues = (await db.execute(text(snap))).all()
-        filas = (await db.execute(text("SELECT id_mensaje, id_usuario, numero_origen FROM mensajes_programados"))).all()
+        filas = (await db.execute(text("SELECT id_mensaje, id_usuario, numero_origen, id_cuenta FROM mensajes_programados"))).all()
         nulos = (await db.execute(text("SELECT count(*) FROM mensajes_programados WHERE id_usuario IS NULL"))).scalar_one()
         notnull = (await db.execute(text("SELECT is_nullable FROM information_schema.columns WHERE table_name='mensajes_programados' AND column_name='id_usuario'"))).scalar_one()
     assert antes == despues and len(despues) == 3                         # ningún dato cambió ni se perdió
@@ -402,6 +407,8 @@ async def test_migracion_de_id_usuario_es_idempotente_y_no_borra_datos(Session):
     assert por_id[ids[0]].id_usuario == U2 and por_id[ids[0]].numero_origen == NUM      # con sesión: dueño y número de la sesión
     assert por_id[ids[1]].id_usuario == U1 and por_id[ids[2]].id_usuario == U1          # sin sesión: usuario piloto
     assert nulos == 0 and notnull == "NO"
+    # v1.1.0: cada mensaje queda en la cuenta de su dueño
+    assert por_id[ids[0]].id_cuenta == U2 and por_id[ids[1]].id_cuenta == U1 and por_id[ids[2]].id_cuenta == U1
 
 
 # ── Versión de los archivos estáticos ────────────────────────────────────────

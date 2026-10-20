@@ -30,10 +30,11 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: uuid.UUID, rol: str) -> str:
+def create_access_token(user_id: uuid.UUID, rol: str, version: int = 0) -> str:
+    """`version` = usuarios.version_token al emitirlo: si después sube (cambio de contraseña), el token deja de valer."""
     expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     return jwt.encode(
-        {"sub": str(user_id), "rol": rol, "exp": expire},
+        {"sub": str(user_id), "rol": rol, "ver": version, "exp": expire},
         SECRET_KEY,
         algorithm=ALGORITHM,
     )
@@ -53,18 +54,30 @@ async def get_current_user(
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise JWTError()
-    except JWTError:
+        uid = uuid.UUID(user_id)
+    except (JWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido o expirado",
         )
-    user = await db.get(Usuario, uuid.UUID(user_id))
+    user = await db.get(Usuario, uid)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuario no encontrado",
         )
+    # Los tokens emitidos antes de v1.1.0 no traen "ver": valen como versión 0 (nadie pierde su sesión al desplegar)
+    if payload.get("ver", 0) != user.version_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tu sesión se cerró. Vuelve a iniciar sesión.",
+        )
     return user
+
+
+async def cerrar_todas_las_sesiones(db: AsyncSession, user: Usuario) -> None:
+    """Invalida todos los JWT del usuario (los nuevos se emiten con la versión nueva). No hace commit."""
+    user.version_token = (user.version_token or 0) + 1
 
 
 async def require_admin(user: Usuario = Depends(get_current_user)) -> Usuario:

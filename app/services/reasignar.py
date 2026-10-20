@@ -2,7 +2,7 @@
 services/reasignar.py
 Cuando se vincula de nuevo el MISMO número, los mensajes programados que quedaron sin sesión (porque se
 eliminó la anterior) pasan a la sesión nueva y se envían a su hora. Solo se reasignan los 'programado' del
-mismo usuario y cuyo numero_origen coincide con el número de la sesión que acaba de conectarse. Los vencidos
+misma cuenta y cuyo numero_origen coincide con el número de la sesión que acaba de conectarse. Los vencidos
 no se reasignan solos (se reprograman) y los de otro número quedan sin sesión (reasignación manual).
 """
 import logging
@@ -25,7 +25,7 @@ async def reasignar_huerfanos(id_sesion) -> int:
             res = await db.execute(
                 update(MensajeProgramado)
                 .where(
-                    MensajeProgramado.id_usuario == sesion.id_usuario,
+                    MensajeProgramado.id_cuenta == sesion.id_cuenta,
                     MensajeProgramado.id_sesion.is_(None),
                     MensajeProgramado.estado_envio == "programado",
                     MensajeProgramado.numero_origen == sesion.numero_telefono,

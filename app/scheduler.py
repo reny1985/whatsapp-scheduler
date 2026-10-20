@@ -29,7 +29,7 @@ from app.database import AsyncSessionLocal as AsyncSessionFactory
 from app.models import MensajeProgramado, SesionWhatsApp, condicion_sesion_nunca_conectada
 from app import envio_config as cfg
 from app.routers.media import DOC_EXT_MIME
-from app.services import semaforo, vigilancia
+from app.services import semaforo, vigilancia, webhook_config
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -204,8 +204,8 @@ def _aware(dt: datetime) -> datetime:
 
 
 def _sesion_utilizable(msg, sesion) -> bool:
-    """La sesión existe, es del MISMO usuario que el mensaje, está conectada y tiene credenciales."""
-    return bool(sesion and sesion.id_usuario == msg.id_usuario
+    """La sesión existe, es de la MISMA cuenta que el mensaje, está conectada y tiene credenciales."""
+    return bool(sesion and sesion.id_cuenta == msg.id_cuenta
                 and sesion.estado_conexion == "conectado" and sesion.token_autorizacion)
 
 
@@ -238,6 +238,7 @@ def _clonar_siguiente(db: AsyncSession, msg: MensajeProgramado, siguiente: datet
         id_mensaje=uuid.uuid4(),
         id_sesion=msg.id_sesion,
         id_usuario=msg.id_usuario,
+        id_cuenta=msg.id_cuenta,
         numero_origen=msg.numero_origen,
         id_grupo=msg.id_grupo,
         texto_mensaje=msg.texto_mensaje,
@@ -568,6 +569,17 @@ def crear_scheduler() -> AsyncIOScheduler:
         trigger="interval",
         seconds=60,
         id="vigilar_conexiones",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # Webhook con secreto: migra (y reintenta) las sesiones que aún no lo tienen confirmado. Corre también al arrancar.
+    scheduler.add_job(
+        webhook_config.migrar_pendientes,
+        trigger="interval",
+        minutes=10,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+        id="migrar_webhooks",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

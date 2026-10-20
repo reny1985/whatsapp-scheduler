@@ -1,10 +1,16 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-15 (estado tras v1.0.8)
+Última actualización: 2026-10-20 (v1.1.0 en production)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.0.8**, sobre `main`. 278 pruebas automáticas pasan.
+**Production (`https://enviafast.net`) corre v1.1.0**, sobre `main` (etiqueta `v1.1.0`). 300 pruebas automáticas pasan.
+
+- **v1.1.0** — cuentas separadas y aislamiento total (sin cambios visibles):
+  - Tabla `cuentas`; usuarios, sesiones, mensajes y plantillas con `id_cuenta` NOT NULL. Todo lo existente pasa a la cuenta interna …0001 (Enterprise, sin vencimiento); el usuario …0001 es el único superadministrador.
+  - Todo id del cliente se busca con la cuenta de quien pide (404 si es ajeno); candados en la BD (trigger + FK compuesta). Prueba guardiana: toda ruta nueva debe declararse en `tests/test_aislamiento.py`.
+  - Webhook con secreto por sesión; la ruta vieja atiende cada sesión hasta confirmar la nueva. Adjuntos nuevos en `uploads/<id_cuenta>/`. `version_token` en el JWT. Límite de intentos en el login (5 por correo / 30 por IP en 15 min; la IP sale de `X-Real-IP`, que Railway sobrescribe).
+  - Ensayo de la migración: `scripts/ensayo_migracion.sh <respaldo>` (copia local, foto antes/después, rollback, borra la copia). Volver atrás: `scripts/rollback_v1.1.0.sql`.
 
 - **v1.0.8** — envío escalonado y protección del número:
   - Un trabajador por sesión; pausas 20–45 s (individual) y 8–20 s (grupo), el doble en rojo; espera inicial 0–20 s descontando el ciclo; ciclo de 20 s; constantes en `app/envio_config.py`.
@@ -55,7 +61,11 @@
 - 205 pruebas automáticas pasan.
 
 ## Decisiones de producto
-- **Planes:** el plan **Profesional ($9) incluye 1 solo número de WhatsApp** (ya no 2). Los planes **Equipo** y **Empresarial** están por definir.
+- **Planes** (definidos en `app/planes.py`): **Pro** 1 número y 1 usuario, $9.99; **Team** 4 y 4, $29.99; **Enterprise** 10 y 10, $69.99. Mensajes sin límite en planes pagados. **Prueba gratis de 7 días**: 1 número y 50 mensajes (cuenta cada mensaje creado, también los clones de recurrencia; cancelar no devuelve el cupo); una prueba por número de WhatsApp. Cobro manual: el superadministrador activa el plan (período pagado de 30 días, 3 días de gracia solo para cuentas pagadas).
+- **Al vencer** (prueba, cortesía o pagado): los pendientes no se envían ni se borran; al llegar su hora pasan a `vencido` ("Tu plan venció") y se reprograman; las series no se clonan; la sesión no se desvincula. Avisos por correo 2 días antes y el día que vence; banner en la app.
+- **Códigos de regalo**: formato `ENVIA-XXXXXX` (6 caracteres sin 0/O/1/I/L/U), plan + 1–6 meses (mes = 30 días), usos, fecha límite y nota interna; un regalo por cuenta, correo y número; se canjea al registrarse, desde "Mi plan" (solo en prueba o vencida; la cortesía empieza ese día y reemplaza la prueba) o por `enviafast.net/regalo/CODIGO`.
+- **Recuperar contraseña** por enlace (30 min). "Mejorar plan" muestra `CONTACTO_EMAIL` (soporte@enviafast.net) y `CONTACTO_WHATSAPP` si está definido.
+- **El registro abierto no se activa en production hasta que existan las páginas de Términos y Privacidad.**
 
 ## Números vinculados
 - **Production** (`enviafast.net`) usa el **0969829845** (593969829845).
@@ -66,6 +76,13 @@
 - Production: `https://enviafast.net`. Staging: `https://thorough-adventure-staging.up.railway.app`.
 - Todo despliegue va a staging; a production solo con "aprobado para producción", tras respaldo `pg_dump` fuera del proyecto, merge a `main`, etiqueta y push (ver CLAUDE.md).
 - Respaldos de production en `~/Desktop/Respaldos_Enviafast/` (se usa `pg_dump` 18 de Homebrew).
+
+## Plan de entregas para vender
+1. ✅ **v1.1.0** — cuentas, migración y aislamiento (en production desde 2026-10-20).
+2. **v1.1.1** — panel de superadministrador (cuentas, cambiar plan, extender prueba, activar 30 días, suspender/reactivar, auditoría; sin ver contenido de mensajes).
+3. **v1.1.2** — registro abierto, verificación, recuperación, prueba de 7 días, límites por plan, "Mi plan", banners y vencimientos. Retirar `/auth/setup` (hoy público mientras el piloto no está configurado) y aplicar límite de intentos a la verificación por código.
+4. **v1.1.3** — códigos de regalo.
+5. **v1.2** — invitar miembros del equipo; después cobros automáticos y referidos.
 
 ## Pendientes futuros (en orden de prioridad)
 1. ✅ **Hecho (v1.0.8): envío escalonado.** (Pendiente de ese ítem: límites por hora y por día según el plan.) Hoy los mensajes se envían en serie y sin pausa (~1,1–1,7 s cada uno), lo que se parece a un bot y arriesga el número. Agregar: (a) pausa aleatoria entre envíos a números individuales; (b) aviso "se enviarán entre HH:MM y HH:MM" al programar varios mensajes a la misma hora; (c) límites por hora y por día según el plan.

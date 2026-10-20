@@ -15,11 +15,12 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.aislamiento import sesion_de_la_cuenta
 from app.auth import get_current_user, require_admin
 from app.database import get_db, AsyncSessionLocal
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario, condicion_sesion_nunca_conectada
-from app.schemas import SesionWhatsAppCreate, SesionWhatsAppRead, PILOTO_ID_USUARIO
-from app.services import aviso_desconexion, perfil, reasignar
+from app.schemas import SesionWhatsAppCreate, SesionWhatsAppRead
+from app.services import aviso_desconexion, perfil, reasignar, webhook_config
 
 logger = logging.getLogger("whatsapp_scheduler")
 
@@ -49,7 +50,7 @@ async def _evo_get(path: str, token: str | None = None, timeout: int = 15) -> An
     """GET a Evolution API. Lanza HTTPException en caso de error."""
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(f"{EVOLUTION_URL}{path}", headers=_evo_headers(token))
-    logger.debug("EVO GET %s → %s | %s", path, r.status_code, r.text[:300])
+    logger.debug("EVO GET %s → %s", path, r.status_code)   # sin el cuerpo: puede traer el apikey o el QR
     if r.status_code >= 400:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -74,7 +75,7 @@ async def _evo_post(path: str, body: dict, token: str | None = None) -> Any:
             headers=_evo_headers(token),
             json=body,
         )
-    logger.debug("EVO POST %s → %s | %s", path, r.status_code, r.text[:300])
+    logger.debug("EVO POST %s → %s", path, r.status_code)   # sin el cuerpo: puede traer el apikey
     if r.status_code >= 400:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -115,48 +116,10 @@ async def _obtener_numero_instancia(instancia: str) -> str | None:
     return None
 
 
-async def _configurar_instancia_bg(instancia: str, token: str | None) -> None:
-    """Configura webhook y settings correctos para la instancia (background)."""
-    base_url = os.getenv("BASE_PUBLIC_URL", "https://app.enviafast.net")
-    webhook_url = base_url.rstrip("/") + "/webhook/evolution"
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        # 1. Webhook
-        try:
-            r = await client.post(
-                f"{EVOLUTION_URL}/webhook/set/{instancia}",
-                headers=_evo_headers(token),
-                json={
-                    "enabled": True,
-                    "url": webhook_url,
-                    "webhookByEvents": False,
-                    "webhookBase64": False,
-                    "events": ["GROUPS_UPSERT", "GROUP_UPDATE", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
-                },
-            )
-            logger.info("Webhook configurado para '%s': HTTP %s", instancia, r.status_code)
-        except Exception as exc:
-            logger.warning("No se pudo configurar webhook para '%s': %s", instancia, exc)
-
-        # 2. Settings: grupos habilitados + sync completo
-        try:
-            r = await client.post(
-                f"{EVOLUTION_URL}/settings/set/{instancia}",
-                headers=_evo_headers(token),
-                json={
-                    "reject_call": False,
-                    "msg_call": "",
-                    "groups_ignore": False,
-                    "always_online": False,
-                    "read_messages": False,
-                    "read_status": False,
-                    "sync_full_history": True,
-                    "wavoipToken": "",
-                },
-            )
-            logger.info("Settings configurados para '%s': HTTP %s", instancia, r.status_code)
-        except Exception as exc:
-            logger.warning("No se pudo configurar settings para '%s': %s", instancia, exc)
+async def _configurar_instancia_bg(id_sesion: uuid.UUID) -> None:
+    """Configura webhook (URL con secreto de la sesión) y settings; si Evolution lo confirma, la ruta vieja deja de
+    aceptar los eventos de esa instancia. Ver services/webhook_config.py."""
+    await webhook_config.configurar_y_confirmar(id_sesion)
 
 
 # ------------------------------------------------------------------
@@ -164,27 +127,16 @@ async def _configurar_instancia_bg(instancia: str, token: str | None) -> None:
 # ------------------------------------------------------------------
 
 @router.post("/", response_model=SesionWhatsAppRead, status_code=status.HTTP_201_CREATED)
-async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends(get_db), _: Usuario = Depends(require_admin)):
+async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends(get_db), usuario: Usuario = Depends(require_admin)):
     """
     Crea un registro de sesión en la BD y registra la instancia en Evolution API.
     Captura el apikey propio de la instancia y lo guarda en token_autorizacion.
-    En modo piloto, crea automáticamente el usuario piloto si no existe.
+    La sesión es SIEMPRE de la cuenta de quien la crea. El nombre de la instancia lo genera el servidor (el que manda
+    el navegador se ignora): así nadie puede apropiarse de una instancia existente de otra cuenta.
     """
-    # 1. Garantizar que el usuario piloto exista en la BD
-    usuario = await db.get(Usuario, payload.id_usuario)
-    if not usuario:
-        usuario = Usuario(
-            id_usuario=payload.id_usuario,
-            email="piloto@whatsapp-scheduler.local",
-            password_hash="piloto-no-auth",
-            estado_suscripcion="activa",
-        )
-        db.add(usuario)
-        await db.flush()  # inserta sin commit para que la FK funcione
-
-    # 2. Validar límite de sesiones por usuario (máx. 2)
+    # 1. Validar límite de sesiones por cuenta (máx. 2; los límites por plan llegan en v1.1.2)
     count_res = await db.execute(
-        select(func.count()).where(SesionWhatsApp.id_usuario == payload.id_usuario)
+        select(func.count()).where(SesionWhatsApp.id_cuenta == usuario.id_cuenta)
     )
     if (count_res.scalar() or 0) >= 2:
         raise HTTPException(
@@ -192,80 +144,54 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
             detail="Límite alcanzado: máximo 2 cuentas de WhatsApp por usuario. Elimina una sesión existente para agregar otra.",
         )
 
-    # 3. Crear la instancia en Evolution API
-    token_instancia = None
+    # 2. Crear la instancia en Evolution API
+    instancia = "wa-" + uuid.uuid4().hex[:12]
+    # Siempre pasar token explícito: Evolution v1.8.x falla al auto-generar
+    # el token cuando ya existe alguna instancia ("Token already exists").
+    token_generado = str(uuid.uuid4()).upper()
     try:
-        # Siempre pasar token explícito: Evolution v1.8.x falla al auto-generar
-        # el token cuando ya existe alguna instancia ("Token already exists").
-        token_generado = str(uuid.uuid4()).upper()
         resp_evo = await _evo_post(
             "/instance/create",
             {
-                "instanceName": payload.instancia_evolution,
+                "instanceName": instancia,
                 "token": token_generado,
                 "qrcode": True,
                 "integration": "WHATSAPP-BAILEYS",
             },
         )
-        logger.info(
-            "Instancia '%s' creada en Evolution API. Respuesta: %s",
-            payload.instancia_evolution, str(resp_evo)[:200],
-        )
-        token_instancia = (
-            (resp_evo.get("hash") or {}).get("apikey")
-            or (resp_evo.get("instance") or {}).get("apikey")
-            or resp_evo.get("apikey")
-        )
-        if token_instancia:
-            logger.info("✅ Token instancia '%s': %s...", payload.instancia_evolution, token_instancia[:8])
-        else:
-            logger.warning("⚠️ Sin token en respuesta para '%s': %s", payload.instancia_evolution, resp_evo)
-
     except HTTPException as exc:
-        detail_str = str(exc.detail).lower()
-        if "409" in str(exc.detail) or "already" in detail_str or "exists" in detail_str:
-            # La instancia ya existe en Evolution — recuperar su token
-            logger.info("Instancia '%s' ya existe, recuperando token.", payload.instancia_evolution)
-            try:
-                instances = await _evo_get(
-                    f"/instance/fetchInstances?instanceName={payload.instancia_evolution}"
-                )
-                if isinstance(instances, list) and instances:
-                    inst_data = instances[0]
-                    token_instancia = (
-                        (inst_data.get("instance") or {}).get("apikey")
-                        or inst_data.get("apikey")
-                        or (inst_data.get("hash") or {}).get("apikey")
-                    )
-                    if token_instancia:
-                        logger.info("✅ Token recuperado para '%s'", payload.instancia_evolution)
-            except Exception as e:
-                logger.warning("No se pudo recuperar token de instancia existente: %s", e)
-        else:
-            # Error real de Evolution API → informar al usuario
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Evolution API no pudo crear la instancia: {exc.detail}",
-            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Evolution API no pudo crear la instancia: {exc.detail}",
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"No se pudo conectar con Evolution API: {exc}. Verifica que Evolution esté corriendo.",
+            detail=f"No se pudo conectar con Evolution API: {type(exc).__name__}. Verifica que Evolution esté corriendo.",
         )
+    token_instancia = (
+        (resp_evo.get("hash") or {}).get("apikey")
+        or (resp_evo.get("instance") or {}).get("apikey")
+        or resp_evo.get("apikey")
+        or token_generado
+    )
+    logger.info("Instancia '%s' creada en Evolution API", instancia)   # nunca el token ni la respuesta (trae el apikey)
 
-    # 4. Guardar sesión en la BD con el token capturado
-    data = payload.model_dump()
-    # Sobreescribir token_autorizacion con el que capturamos de Evolution
-    if token_instancia:
-        data["token_autorizacion"] = token_instancia
-
-    sesion = SesionWhatsApp(**data)
+    # 3. Guardar sesión en la BD con el token capturado
+    sesion = SesionWhatsApp(
+        id_usuario=usuario.id_usuario,
+        id_cuenta=usuario.id_cuenta,
+        nombre_sesion=payload.nombre_sesion,
+        instancia_evolution=instancia,
+        token_autorizacion=token_instancia,
+        secreto_webhook=webhook_config.nuevo_secreto(),
+    )
     db.add(sesion)
     await db.commit()
     await db.refresh(sesion)
 
     # Configurar webhook automáticamente (best-effort, no bloquea si falla)
-    asyncio.create_task(_configurar_instancia_bg(sesion.instancia_evolution, token_instancia))
+    asyncio.create_task(_configurar_instancia_bg(sesion.id_sesion))
 
     return sesion
 
@@ -274,7 +200,7 @@ async def crear_sesion(payload: SesionWhatsAppCreate, db: AsyncSession = Depends
 async def iniciar_pairing(
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """
     Flujo completo de vinculación por código (pairing code):
@@ -293,12 +219,10 @@ async def iniciar_pairing(
     if len(digits) < 8:
         raise HTTPException(status_code=400, detail="Número de teléfono inválido")
 
-    id_usuario = PILOTO_ID_USUARIO
-
-    # 1. Eliminar instancias pendientes del usuario para evitar conflictos con WhatsApp
+    # 1. Eliminar instancias pendientes de ESTA cuenta para evitar conflictos con WhatsApp (nunca las de otra)
     result = await db.execute(
         select(SesionWhatsApp).where(
-            SesionWhatsApp.id_usuario == id_usuario,
+            SesionWhatsApp.id_cuenta == usuario.id_cuenta,
             SesionWhatsApp.estado_conexion == "qr_pendiente",
             condicion_sesion_nunca_conectada(),
         )
@@ -340,13 +264,15 @@ async def iniciar_pairing(
         or (resp_evo.get("instance") or {}).get("apikey")
         or token_generado
     )
-    logger.info("iniciar-pairing: instancia '%s' creada, token=%s...", instancia, token[:8])
+    logger.info("iniciar-pairing: instancia '%s' creada", instancia)   # nunca el token
 
     # 3. Guardar en BD
     nueva = SesionWhatsApp(
-        id_usuario=id_usuario,
+        id_usuario=usuario.id_usuario,
+        id_cuenta=usuario.id_cuenta,
         instancia_evolution=instancia,
         token_autorizacion=token,
+        secreto_webhook=webhook_config.nuevo_secreto(),
         estado_conexion="qr_pendiente",
     )
     db.add(nueva)
@@ -354,7 +280,7 @@ async def iniciar_pairing(
     await db.refresh(nueva)
 
     # 4. Configurar webhook + settings (inline: necesitamos que termine antes de sondear)
-    await _configurar_instancia_bg(instancia, token)
+    await _configurar_instancia_bg(nueva.id_sesion)
 
     # 5. Esperar a que Baileys establezca la sesión WS con WhatsApp
     await asyncio.sleep(3)
@@ -374,9 +300,10 @@ async def iniciar_pairing(
 
         pc = data.get("pairingCode") if isinstance(data, dict) else None
         count = data.get("count") if isinstance(data, dict) else None
+        # El código de vinculación es una credencial: en el log solo si llegó, nunca su valor
         logger.info(
-            "iniciar-pairing intento %d | instancia=%s | number=%s | pairingCode=%s | count=%s | raw=%s",
-            attempt + 1, instancia, digits, pc, count, str(data)[:300],
+            "iniciar-pairing intento %d | instancia=%s | number=%s | pairingCode=%s | count=%s",
+            attempt + 1, instancia, digits, "recibido" if pc else None, count,
         )
         if pc:
             pairing_code = pc
@@ -425,10 +352,10 @@ async def iniciar_pairing(
 
 
 @router.get("/", response_model=list[SesionWhatsAppRead])
-async def listar_sesiones(db: AsyncSession = Depends(get_db), _: Usuario = Depends(get_current_user)):
-    """Lista todas las sesiones (un usuario = 1 sesión en la fase piloto)."""
+async def listar_sesiones(db: AsyncSession = Depends(get_db), usuario: Usuario = Depends(get_current_user)):
+    """Lista las sesiones de la cuenta de quien pide (nunca las de otra cuenta)."""
     result = await db.execute(
-        select(SesionWhatsApp).order_by(
+        select(SesionWhatsApp).where(SesionWhatsApp.id_cuenta == usuario.id_cuenta).order_by(
             # conectado primero, luego por fecha de creación
             SesionWhatsApp.estado_conexion.desc(),
             SesionWhatsApp.fecha_creacion.desc(),
@@ -438,10 +365,8 @@ async def listar_sesiones(db: AsyncSession = Depends(get_db), _: Usuario = Depen
 
 
 @router.get("/{id_sesion}", response_model=SesionWhatsAppRead)
-async def obtener_sesion(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), _: Usuario = Depends(get_current_user)):
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+async def obtener_sesion(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), usuario: Usuario = Depends(get_current_user)):
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
     return sesion
 
 
@@ -450,16 +375,14 @@ async def obtener_pairing_code(
     id_sesion: uuid.UUID,
     numero: str,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """
     Solicita un pairing code a Evolution API para vincular por número de teléfono.
     El número debe estar normalizado: solo dígitos con código de país (ej: 593969829845).
     Llama a GET /instance/connect/{instancia}?number={numero} y devuelve el pairingCode.
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     digits = "".join(c for c in numero if c.isdigit())
     if len(digits) < 8:
@@ -484,8 +407,8 @@ async def obtener_pairing_code(
         data = await _evo_get(path, token=sesion.token_autorizacion)
         pairing_code = data.get("pairingCode") if isinstance(data, dict) else None
         logger.info(
-            "pairing-code (renovar) intento %d | instancia=%s | pairingCode=%s | raw=%s",
-            attempt + 1, sesion.instancia_evolution, pairing_code, str(data)[:300],
+            "pairing-code (renovar) intento %d | instancia=%s | pairingCode=%s",
+            attempt + 1, sesion.instancia_evolution, "recibido" if pairing_code else None,
         )
         if pairing_code:
             break
@@ -515,9 +438,7 @@ async def mensajes_pendientes_de_sesion(
     usuario: Usuario = Depends(get_current_user),
 ):
     """Cuántos mensajes pendientes tiene la sesión (para avisar antes de eliminarla)."""
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion or sesion.id_usuario != usuario.id_usuario:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
     n = (await db.execute(
         select(func.count()).select_from(MensajeProgramado)
         .where(MensajeProgramado.id_sesion == id_sesion,
@@ -530,11 +451,9 @@ async def mensajes_pendientes_de_sesion(
 async def eliminar_sesion(
     id_sesion: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
     # Eliminar instancia de Evolution API (best-effort)
     try:
         async with httpx.AsyncClient(timeout=8) as client:
@@ -553,7 +472,7 @@ async def actualizar_estado(
     id_sesion: uuid.UUID,
     estado: str,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """Actualiza estado_conexion manualmente (qr_pendiente / conectado / desconectado)."""
     allowed = {"qr_pendiente", "conectado", "desconectado"}
@@ -562,6 +481,7 @@ async def actualizar_estado(
             status_code=400,
             detail=f"Estado inválido. Usar uno de: {allowed}"
         )
+    await sesion_de_la_cuenta(db, id_sesion, usuario)
     stmt = (
         update(SesionWhatsApp)
         .where(SesionWhatsApp.id_sesion == id_sesion)
@@ -580,15 +500,13 @@ async def actualizar_estado(
 # ------------------------------------------------------------------
 
 @router.get("/{id_sesion}/qr")
-async def obtener_qr_por_id(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), _: Usuario = Depends(require_admin)):
+async def obtener_qr_por_id(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), usuario: Usuario = Depends(require_admin)):
     """
     Obtiene QR fresco de Evolution API para la sesión identificada por UUID.
     Usa el token propio de la instancia (token_autorizacion en BD).
     Normaliza la respuesta para que el frontend siempre reciba { base64, code }.
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     instancia = sesion.instancia_evolution
     token = sesion.token_autorizacion
@@ -639,8 +557,8 @@ async def obtener_qr_por_id(id_sesion: uuid.UUID, db: AsyncSession = Depends(get
 
         if not b64 and not code:
             logger.warning(
-                "QR sin contenido esperado para '%s': %s",
-                instancia, data
+                "QR sin contenido esperado para '%s' (claves: %s)",
+                instancia, sorted(data) if isinstance(data, dict) else type(data).__name__
             )
 
         return {"base64": b64, "code": code, "raw": data}
@@ -659,9 +577,7 @@ async def foto_perfil(
     usuario: Usuario = Depends(get_current_user),
 ):
     """Foto de perfil guardada en el servidor. Requiere login y que la sesión sea del usuario."""
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion or sesion.id_usuario != usuario.id_usuario:
-        raise HTTPException(status_code=404, detail="Sin foto")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario, detalle="Sin foto")
     ruta = perfil.ruta_foto(id_sesion)
     if not ruta.is_file():
         raise HTTPException(status_code=404, detail="Sin foto")
@@ -670,14 +586,12 @@ async def foto_perfil(
 
 
 @router.get("/{id_sesion}/verificar")
-async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), _: Usuario = Depends(require_admin)):
+async def verificar_estado(id_sesion: uuid.UUID, db: AsyncSession = Depends(get_db), usuario: Usuario = Depends(require_admin)):
     """
     Consulta el estado de la sesión en Evolution API y sincroniza la BD.
     Retorna el estado actual de Evolution.
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     try:
         # Usa el token propio de la instancia
@@ -807,7 +721,7 @@ async def listar_grupos(
     id_sesion: uuid.UUID,
     forzar: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     """
     Devuelve grupos desde caché en BD (respuesta inmediata).
@@ -815,9 +729,7 @@ async def listar_grupos(
     Con ?forzar=true espera a que Evolution sincronice (puede tardar ~1 min con muchos grupos)
     y responde 502 con un mensaje claro si la sincronización falla.
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     async def _leer_cache():
         r = await db.execute(
@@ -854,14 +766,12 @@ async def verificar_grupo(
     id_sesion: uuid.UUID,
     jid: str,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     """Comprueba con Evolution (group/findGroupInfos) que el grupo existe y devuelve su nombre y
     número de participantes. 404 de Evolution → el grupo ya no existe o la sesión ya no pertenece.
     La clave de Evolution nunca llega al navegador."""
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
     if not jid.endswith("@g.us"):
         raise HTTPException(status_code=400, detail="El JID debe ser de un grupo (termina en @g.us)")
     if sesion.estado_conexion != "conectado":
@@ -903,7 +813,7 @@ async def resolver_enlace_grupo(
     id_sesion: uuid.UUID,
     codigo: str,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """
     Convierte un código de invitación de WhatsApp en el JID del grupo.
@@ -916,9 +826,7 @@ async def resolver_enlace_grupo(
 
     Retorna: { jid: "120363xxx@g.us", subject: "Nombre del grupo" }
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     instancia = sesion.instancia_evolution
     token = sesion.token_autorizacion
@@ -980,16 +888,14 @@ async def resolver_enlace_grupo(
 async def listar_contactos(
     id_sesion: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    usuario: Usuario = Depends(get_current_user),
 ):
     """
     Devuelve la agenda de contactos desde Evolution API.
     Evolution v1.x: GET /chat/findContacts/{instance}?where={"key":{"remoteJid":""}}
     Solo retorna contactos con JID @s.whatsapp.net (números personales).
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     try:
         data = await _evo_post(
@@ -1021,15 +927,13 @@ async def listar_contactos(
 async def sincronizar_sesion(
     id_sesion: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """
     Sincroniza token y grupos desde Evolution API.
     Útil cuando el token en BD quedó desactualizado tras reconexión.
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     # 1. Obtener token correcto desde Evolution (usa global key)
     async with httpx.AsyncClient(timeout=15) as client:
@@ -1074,14 +978,12 @@ async def sincronizar_sesion(
 async def configurar_webhook(
     id_sesion: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """Configura webhook y settings correctos para la sesión."""
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
-    await _configurar_instancia_bg(sesion.instancia_evolution, sesion.token_autorizacion)
+    await _configurar_instancia_bg(sesion.id_sesion)
     return {"ok": True}
 
 
@@ -1090,16 +992,14 @@ async def verificar_numero_whatsapp(
     id_sesion: uuid.UUID,
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_admin),
+    usuario: Usuario = Depends(require_admin),
 ):
     """
     Verifica si un número de teléfono tiene cuenta de WhatsApp activa.
     Llama a Evolution API /chat/whatsappNumbers/{instance}.
     Retorna: { jid, existe, nombre }
     """
-    sesion = await db.get(SesionWhatsApp, id_sesion)
-    if not sesion:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    sesion = await sesion_de_la_cuenta(db, id_sesion, usuario)
 
     numero_raw = str(body.get("numero", "")).strip()
     digits = "".join(c for c in numero_raw if c.isdigit())

@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.1.0 — 2026-10-20 — Cuentas separadas y aislamiento total
+
+Primera de las cuatro entregas para vender (v1.1.1 panel de superadministrador, v1.1.2 registro y planes, v1.1.3 códigos de regalo). Sin cambios visibles para el usuario.
+
+- **Entidad `cuentas`** (el cliente): plan, estado (prueba / activa / cortesía / vencida / suspendida), fin de prueba, fin del período y contador de mensajes de prueba. Usuarios, sesiones, mensajes y plantillas pertenecen a una cuenta (`id_cuenta` NOT NULL); los grupos, a través de su sesión. Planes y límites en un solo lugar: `app/planes.py` (Pro 1/1, Team 4/4, Enterprise 10/10; prueba de 7 días con 50 mensajes; se aplican desde v1.1.2)
+- **Migración segura** (idempotente, sin borrar ni cambiar datos): el usuario …0001 y todo lo suyo pasan a la cuenta interna …0001 (Enterprise, sin vencimiento) y ese usuario queda como **superadministrador** (`usuarios.es_superadmin`, por id). Ensayada sobre una copia del respaldo de production: conteos y hash idénticos antes y después. `scripts/rollback_v1.1.0.sql` deja volver a v1.0.8 sin perder datos
+- **Aislamiento total**: todo id que llega del cliente (URL, query o cuerpo) se busca junto con la cuenta de quien pide; si es de otra cuenta, 404. Se cerraron los huecos que había: los endpoints `/sesiones/{id}/…` no comprobaban el dueño, `GET /sesiones/` listaba las de todos, la vinculación asignaba toda sesión al piloto, `POST /sesiones/` aceptaba `id_usuario` y el nombre de instancia del navegador (y recuperaba el token de una instancia existente), y `PATCH /sesiones/{id}/estado` no buscaba la sesión. Inicio, Mensajes, plantillas y el programador filtran por cuenta
+- **Candados en la base de datos**: un trigger completa `id_cuenta` desde el usuario y rechaza una cuenta distinta a la suya; una FK compuesta impide que un mensaje apunte a una sesión de otra cuenta
+- **Webhook con secreto por sesión** (`/webhook/evolution/<secreto>`): solo se procesa si el evento es de la instancia dueña de ese secreto. La ruta vieja sigue atendiendo cada sesión hasta confirmar en Evolution (`webhook/find`) o por su primer evento que ya usa la URL nueva; un job cada 10 min migra las pendientes
+- **Adjuntos**: subir exige login y guarda en `<UPLOAD_DIR>/<id_cuenta>/`. Un mensaje o plantilla solo acepta adjuntos de su cuenta; los antiguos (en la raíz de uploads) siguen funcionando para la cuenta que ya los usa, sin mover archivos
+- **Cerrar sesiones**: el JWT lleva `version_token`; al subirla (cambio de contraseña, desde v1.1.2) se cierran todas las sesiones abiertas. Los tokens anteriores a v1.1.0 siguen valiendo (nadie pierde su sesión al desplegar)
+- **Límite de intentos en el login**: 5 fallos en 15 min por correo y 30 por IP → 429 con "Espera N min". La IP es `X-Real-IP`, que el proxy de Railway sobrescribe (comprobado en staging con encabezados falsificados); no el último valor de `X-Forwarded-For`, que es el nodo de borde (CDN) y cambia entre peticiones. Si no llega `X-Real-IP` válida, solo se limita por correo. Guardado en Postgres (`intentos_acceso`, claves con hash). Si el correo no existe se compara igual contra un hash (mismo tiempo de respuesta)
+- **Nada secreto en el log**: ya no se imprimen tokens de instancia, códigos de vinculación, QR ni cuerpos de respuesta de Evolution
+- Pruebas automáticas: 300 (nuevas: aislamiento con prueba guardiana de rutas, 401 sin login en toda ruta no pública, B contra A en todos los endpoints, candados de la BD, webhook, login y migración desde el esquema real de v1.0.8 con rollback)
+
 ## v1.0.8 — 2026-10-15 — Envío escalonado y protección del número
 
 - **Envío escalonado por número**: un trabajador por sesión (las sesiones corren en paralelo, nunca dos colas de la misma sesión). Pausa aleatoria entre envíos: 20–45 s a números individuales y 8–20 s a grupos (el doble en semáforo rojo). Los mensajes de una sesión salen en orden de `fecha_hora_disparo`

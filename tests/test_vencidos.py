@@ -200,7 +200,7 @@ async def test_fallo_de_evolution_sigue_siendo_fallido_no_vencido(Session):
 
 async def test_enviar_ahora_no_se_marca_vencido(Session):
     sid = await _sesion(Session)
-    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
     async with Session() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -222,7 +222,7 @@ async def test_no_se_cancela_en_cola_pero_si_se_elimina_un_vencido(Session):
     sid = await _sesion(Session)
     en_cola = await _msg(Session, sid, _hace(minutes=1), estado="en_cola")
     vencido = await _msg(Session, sid, _hace(hours=1), estado="vencido")
-    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
     async with Session() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:

@@ -45,13 +45,13 @@ PILOTO_ID_USUARIO = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class SesionWhatsAppCreate(BaseModel):
+    # El dueño SIEMPRE es quien hace la petición: id_usuario, id_cuenta o token enviados por el cliente se ignoran.
+    # instancia_evolution se acepta por compatibilidad con el navegador, pero el nombre real lo genera el servidor.
     model_config = ConfigDict(extra="ignore")
-    id_usuario: uuid.UUID = Field(default=PILOTO_ID_USUARIO)
     nombre_sesion: str | None = Field(default=None, max_length=100)
-    instancia_evolution: str = Field(
-        min_length=3, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$"
+    instancia_evolution: str | None = Field(
+        default=None, min_length=3, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$"
     )
-    token_autorizacion: str | None = Field(default=None, max_length=255)
 
 
 class SesionWhatsAppRead(ORMBase):

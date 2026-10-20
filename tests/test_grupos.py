@@ -29,12 +29,14 @@ def _sesion():
     s.instancia_evolution = 'wa-test'
     s.estado_conexion = 'conectado'
     s.token_autorizacion = 'test-token'
+    s.id_cuenta = USUARIO_ID
     return s
 
 
 def _usuario():
     u = MagicMock()
     u.id_usuario = USUARIO_ID
+    u.id_cuenta = USUARIO_ID          # la cuenta interna …0001 tiene el mismo UUID que el usuario piloto
     return u
 
 

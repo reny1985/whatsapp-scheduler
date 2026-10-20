@@ -44,9 +44,11 @@ def _hoy_seguro():
 @pytest_asyncio.fixture
 async def datos(Session):
     async with Session() as db:
+        # el otro usuario es de OTRA cuenta (su cuenta usa el mismo UUID que él)
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado) VALUES (:u, 'activa')"), {"u": U2})
         await db.execute(text(
-            "INSERT INTO usuarios (id_usuario, email, password_hash, rol) "
-            "VALUES (:u, 'otro@x.com', 'x', 'admin')"), {"u": U2})
+            "INSERT INTO usuarios (id_usuario, email, password_hash, rol, id_cuenta) "
+            "VALUES (:u, 'otro@x.com', 'x', 'admin', :u)"), {"u": U2})
         await db.commit()
     return Session
 
@@ -69,7 +71,7 @@ async def _msg(maker, sid, cuando, estado="enviado", destino="120363@g.us", tipo
 
 
 async def _resumen(maker, usuario=U1):
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=usuario)
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=usuario, id_cuenta=usuario)
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -207,7 +209,7 @@ async def test_numero_de_consultas_no_depende_de_la_cantidad_de_mensajes(datos):
     def _cuenta(conn, cursor, statement, parameters, context, executemany):
         contador["n"] += 1
 
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
 
     async def medir():
         async with datos() as db:

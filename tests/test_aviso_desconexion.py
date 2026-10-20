@@ -157,7 +157,7 @@ async def test_verificar_tambien_avisa_una_vez(mundo, monkeypatch):
     monkeypatch.setattr(sesiones, "_evo_get", AsyncMock(return_value={"instance": {"state": "close"}}))
     monkeypatch.setattr(sesiones.aviso_desconexion, "AsyncSessionLocal", maker)
     from app.auth import require_admin
-    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[require_admin] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -194,7 +194,7 @@ async def test_envio_real_a_resend_usa_el_remitente_actual(monkeypatch):
 # ── Aviso del Inicio y conteo antes de eliminar ──────────────────────────────
 
 async def _resumen(maker):
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -239,13 +239,13 @@ async def test_conteo_de_pendientes_antes_de_eliminar_un_numero(mundo):
         db.add(MensajeProgramado(id_usuario=U1, id_mensaje=uuid.uuid4(), id_sesion=sid, id_grupo="1@g.us", texto_mensaje="x",
                                  fecha_hora_disparo=datetime.now(timezone.utc), estado_envio="enviado"))
         await db.commit()
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1)
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=U1, id_cuenta=U1)
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.get(f"/sesiones/{sid}/pendientes")
     assert r.status_code == 200 and r.json() == {"pendientes": 3}
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id_usuario=uuid.uuid4())     # otro usuario
+    app.dependency_overrides[get_current_user] = lambda: (lambda u: MagicMock(id_usuario=u, id_cuenta=u))(uuid.uuid4())     # otro usuario
     async with maker() as db:
         app.dependency_overrides[get_db] = lambda: db
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
