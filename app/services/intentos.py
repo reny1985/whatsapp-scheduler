@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 LOGIN_VENTANA = timedelta(minutes=15)
 LOGIN_MAX_FALLOS_CORREO = 5
 LOGIN_MAX_FALLOS_IP = 30
+VERIFICAR_VENTANA = timedelta(minutes=15)
+VERIFICAR_MAX_FALLOS_CORREO = 5        # al llegar aquí el código se anula: hay que pedir uno nuevo
+VERIFICAR_MAX_FALLOS_IP = 30
 
 
 def clave(accion: str, tipo: str, valor: str) -> str:

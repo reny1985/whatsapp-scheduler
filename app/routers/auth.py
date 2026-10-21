@@ -4,7 +4,7 @@ Login, logout, perfil, setup inicial y verificación de correo.
 """
 import logging
 import os
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -44,7 +44,7 @@ class EnvioCorreoError(Exception):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _generar_codigo() -> str:
-    return str(random.randint(100000, 999999))
+    return str(100000 + secrets.randbelow(900000))
 
 
 async def _enviar_email(to: str, codigo: str) -> str | None:
@@ -299,40 +299,59 @@ async def reenviar_codigo(
 @router.post("/verificar-codigo")
 async def verificar_codigo(
     payload: VerificarCodigoRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Verifica el código de 6 dígitos enviado por email.
     Si es correcto, marca el correo como verificado y hace login automático.
+    Nunca inicia sesión sin un código válido: un correo ya verificado entra solo por /auth/login (con contraseña).
     """
+    # Límite de intentos, igual que el login: por correo (adivinar el código) y por IP (probar muchos correos)
+    ip = intentos.ip_cliente(request)
+    k_correo = intentos.clave("verificar", "correo", payload.email)
+    k_ip = intentos.clave("verificar", "ip", ip) if ip else None
+    espera = max(
+        await intentos.bloqueado(db, k_correo, intentos.VERIFICAR_MAX_FALLOS_CORREO, intentos.VERIFICAR_VENTANA),
+        await intentos.bloqueado(db, k_ip, intentos.VERIFICAR_MAX_FALLOS_IP, intentos.VERIFICAR_VENTANA) if k_ip else 0,
+    )
+    if espera:
+        logger.warning("Verificación bloqueada por demasiados intentos (ip=%s, faltan %ss)", ip, espera)
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail=intentos.mensaje_espera(espera), headers={"Retry-After": str(espera)})
+
     res = await db.execute(select(Usuario).where(Usuario.email == payload.email))
     user = res.scalar_one_or_none()
 
-    if not user:
-        raise HTTPException(status_code=400, detail="Código incorrecto o expirado")
-
-    if user.email_verificado:
-        # Ya verificado, hacer login directo
-        token = create_access_token(user.id_usuario, user.rol, user.version_token)
-        response.set_cookie(
-            key="access_token", value=token, httponly=True, samesite="lax",
-            max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
-        )
-        return {"ok": True, "rol": user.rol, "email": user.email}
-
     ahora = datetime.now(timezone.utc)
-    expira = user.codigo_expira_en
+    expira = user.codigo_expira_en if user else None
     if expira and expira.tzinfo is None:
         expira = expira.replace(tzinfo=timezone.utc)
 
-    if (
-        user.codigo_verificacion != payload.codigo
-        or not expira
-        or ahora > expira
-    ):
+    # Correo inexistente, ya verificado, código distinto o vencido: la misma respuesta y cuenta como fallo
+    valido = (
+        user is not None
+        and not user.email_verificado
+        and bool(user.codigo_verificacion)
+        and secrets.compare_digest(user.codigo_verificacion.encode(), payload.codigo.encode())
+        and expira is not None
+        and ahora <= expira
+    )
+    if not valido:
+        await intentos.registrar_fallo(db, k_correo, intentos.VERIFICAR_VENTANA)
+        if k_ip:
+            await intentos.registrar_fallo(db, k_ip, intentos.VERIFICAR_VENTANA)
+        # Al llegar al máximo se anula el código: aunque pase la espera, ya no sirve y hay que pedir otro
+        if user and not user.email_verificado and await intentos.bloqueado(
+                db, k_correo, intentos.VERIFICAR_MAX_FALLOS_CORREO, intentos.VERIFICAR_VENTANA):
+            user.codigo_verificacion = None
+            user.codigo_expira_en = None
+        await db.commit()
+        logger.info("Verificación fallida (ip=%s)", ip or "desconocida")      # nunca el correo ni el código
         raise HTTPException(status_code=400, detail="Código incorrecto o expirado")
 
+    await intentos.limpiar(db, k_correo)
     user.email_verificado    = True
     user.codigo_verificacion = None
     user.codigo_expira_en    = None
