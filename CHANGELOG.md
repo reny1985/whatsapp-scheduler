@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.0.1 — 2026-10-21 — Arreglo de seguridad en la verificación de correo
+
+Arreglo urgente sobre v1.1.0, sin cambios en la base de datos ni en lo que ve el usuario.
+
+- **Falla cerrada**: `POST /auth/verificar-codigo` iniciaba sesión sin revisar el código si el correo ya estaba verificado (bastaba conocer el correo). Ahora responde 400 "Código incorrecto o expirado", igual que con un correo inexistente o un código malo, y nunca entrega cookie de sesión sin un código válido. Un correo ya verificado entra solo por `/auth/login`, con contraseña
+- **Código de verificación** generado con `secrets` (antes `random`) y comparado en tiempo constante
+- **Límite de intentos en la verificación** (mismo mecanismo que el login, tabla `intentos_acceso` existente): 5 fallos por correo y 30 por IP en 15 min → 429 con "Espera N min". Al llegar al máximo el código se anula y hay que pedir uno nuevo. Los intentos contra un correo ya verificado también cuentan y no afectan al login con contraseña
+- `.railwayignore`: `railway up` ya no sube la carpeta local `enviafast-imagenes/`
+- Pruebas automáticas: 311 (nuevas: 11 en `tests/test_verificar_codigo.py`; 7 de ellas fallan con el código anterior)
+
 ## v1.1.0 — 2026-10-20 — Cuentas separadas y aislamiento total
 
 Primera de las cuatro entregas para vender (v1.1.1 panel de superadministrador, v1.1.2 registro y planes, v1.1.3 códigos de regalo). Sin cambios visibles para el usuario.
