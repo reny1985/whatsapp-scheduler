@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.1.1 — 2026-10-21 — Panel de superadministrador (en staging)
+
+- **Panel en `/admin`**, solo para el superadministrador. Para cualquier otro usuario (o sin login, con un token viejo o con `es_superadmin` en una cuenta que no es la interna) todo `/admin` responde como una ruta inexistente. Hay dos candados: un middleware que se ejecuta antes del enrutador (así ni un 405, 400 o 422 delata el panel) y la dependencia `require_superadmin` en el router. `es_superadmin` se lee de la BD en cada petición. La página y su JS salen por rutas protegidas, y `/admin` no aparece en OpenAPI. Enlace "Administración" en el menú, solo para el superadministrador
+- **Resumen**: cuentas por estado, ingreso mensual estimado (las cuentas activas al día; las que están en gracia, aparte) y cuentas que vencen en 7 días. **Lista** con búsqueda por correo y filtros por estado y plan (tarjetas en el celular). **Detalle**: números enmascarados (…9845) con "Mostrar" (queda en la auditoría), conteos de mensajes (nunca su contenido) e historial
+- **Acciones**: cambiar plan (no deja bajar si la cuenta tiene más números o usuarios que el plan nuevo), extender la prueba 1–30 días, activar 30 días (se suma al período vigente, también durante la gracia; si venció o viene de la prueba, empieza hoy; nota opcional), suspender (con motivo; cierra sus sesiones) y reactivar (vuelve al estado anterior). Antes de confirmar, el servidor simula la acción y muestra el antes y el después. Al confirmar, todo va en una transacción con la cuenta bloqueada, y una clave única evita aplicar dos veces la misma acción
+- **Auditoría** (`auditoria_admin`: quién, qué, antes, después, nota, IP, cuándo): la BD impide modificarla o borrarla. **Períodos** (`periodos_cuenta`, con el precio de ese momento)
+- **La cuenta interna es de solo lectura**: el panel no la deja modificar, y la BD solo la acepta activa y sin vencimiento
+- **Efectos de los estados** (un solo lugar: `app/cuentas.py`; "vencida" se calcula con las fechas):
+  - Una cuenta suspendida no entra ni pasa ninguna petición (403 con aviso). No envía nada, tampoco lo que ya estaba en cola, y no recibe avisos de desconexión
+  - Una cuenta vencida entra, pero no programa ni edita. A su hora, sus mensajes pasan a `vencido` ("Tu plan venció…") sin clonar la serie
+  - Las cuentas pagadas tienen 3 días de gracia, en los que siguen enviando
+- **Candados de la BD en `cuentas`**: estados y planes válidos, y ninguna cuenta (salvo la interna) activa o en cortesía sin fecha de fin
+- **Limpieza**: se borraron `app/routers/usuarios.py` (endpoints sin login que no se usaban), `app/security.py` y los esquemas `UsuarioCreate` / `UsuarioRead`
+- **Scripts**:
+  - `scripts/ensayo_v1.1.1.sh` ensaya la migración sobre una copia de production: foto antes y después, rollback, arranque de v1.1.0 y nueva subida
+  - `scripts/rollback_v1.1.1.sql` quita solo los candados nuevos y avisa qué cuentas recuperarían el acceso con v1.1.0
+  - `scripts/staging_cuentas_prueba.py` crea cuentas de prueba y se niega a correr fuera de staging
+- Pruebas automáticas: 319 (19 nuevas en `tests/test_admin.py`; la prueba guardiana incluye las rutas de `/admin`)
+
 ## v1.1.0 — 2026-10-20 — Cuentas separadas y aislamiento total
 
 Primera de las cuatro entregas para vender (v1.1.1 panel de superadministrador, v1.1.2 registro y planes, v1.1.3 códigos de regalo). Sin cambios visibles para el usuario.

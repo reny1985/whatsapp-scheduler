@@ -13,8 +13,9 @@ from html import escape
 
 from sqlalchemy import func, select, update
 
+from app.cuentas import estado_efectivo
 from app.database import AsyncSessionLocal
-from app.models import MensajeProgramado, SesionWhatsApp, Usuario
+from app.models import Cuenta, MensajeProgramado, SesionWhatsApp, Usuario
 from app.services import correo, evolution_estado
 
 logger = logging.getLogger("whatsapp_scheduler")
@@ -79,6 +80,10 @@ async def avisar_desconexion(id_sesion, espera: float = 0) -> bool:
                 logger.info("Aviso de desconexión: la sesión ya no existe (se eliminó), no se envía")
                 return False
             if sesion.estado_conexion == "conectado" or sesion.aviso_desconexion_en is not None:
+                return False
+            cuenta = await db.get(Cuenta, sesion.id_cuenta)
+            if cuenta is None or estado_efectivo(cuenta).estado == "suspendida":
+                logger.info("Aviso de desconexión: la cuenta está suspendida, no se envía")
                 return False
             usuario = await db.get(Usuario, sesion.id_usuario)
             if not usuario or not usuario.email_verificado or "@" not in usuario.email or usuario.email.endswith("@localhost"):

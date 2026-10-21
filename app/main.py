@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,9 +17,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import superadmin_o_none
 from app.database import engine, get_db
 from app.migrate import run_migrations
-from app.routers import auth, dashboard, media, mensajes, plantillas, sesiones, webhook
+from app.routers import admin, auth, dashboard, media, mensajes, plantillas, sesiones, webhook
 from app.scheduler import crear_scheduler
 
 logging.basicConfig(
@@ -85,6 +86,28 @@ class _UploadsStaticFiles(StaticFiles):
 
 app.mount("/static/uploads", _UploadsStaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
+
+@app.middleware("http")
+async def candado_admin(request: Request, call_next):
+    """Primer candado del panel: todo /admin se comprueba ANTES del enrutador. Para quien no es el superadministrador
+    responde exactamente como una ruta inexistente (así ni un 405, 400 o 422 delata que el panel existe).
+    El segundo candado es la dependencia require_superadmin del router."""
+    ruta = request.url.path
+    if ruta == "/admin" or ruta.startswith("/admin/"):
+        proveedor = app.dependency_overrides.get(get_db, get_db)
+        sesiones_db = proveedor()
+        db = await sesiones_db.__anext__()
+        try:
+            permitido = await superadmin_o_none(request.cookies.get("access_token"), db) is not None
+        finally:
+            await sesiones_db.aclose()
+        if not permitido:
+            logger.info("Acceso a /admin rechazado (%s %s)", request.method, ruta[:80])
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": "Not Found"})
+    return await call_next(request)
+
+
+app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(sesiones.router)
 app.include_router(mensajes.router)

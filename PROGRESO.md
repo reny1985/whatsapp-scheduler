@@ -1,10 +1,12 @@
 # PROGRESO — WhatsApp Scheduler
 
-Última actualización: 2026-10-20 (v1.1.0 en production)
+Última actualización: 2026-10-21 (v1.1.1 en staging; production sigue en v1.1.0)
 
 ## Estado actual
 
-**Production (`https://enviafast.net`) corre v1.1.0**, sobre `main` (etiqueta `v1.1.0`). 300 pruebas automáticas pasan.
+**Production (`https://enviafast.net`) corre v1.1.0**, sobre `main` (etiqueta `v1.1.0`).
+
+**Staging corre v1.1.1** (rama `panel`, sin merge): panel de superadministrador en `/admin` y efectos de los estados de cuenta (detalle en CHANGELOG). 319 pruebas automáticas pasan. Ensayo de la migración sobre el respaldo de production del 2026-10-21: foto idéntica, 5 candados y rollback probado. Cuentas de prueba de staging: `scripts/staging_cuentas_prueba.py`.
 
 - **v1.1.0** — cuentas separadas y aislamiento total (sin cambios visibles):
   - Tabla `cuentas`; usuarios, sesiones, mensajes y plantillas con `id_cuenta` NOT NULL. Todo lo existente pasa a la cuenta interna …0001 (Enterprise, sin vencimiento); el usuario …0001 es el único superadministrador.
@@ -79,8 +81,8 @@
 
 ## Plan de entregas para vender
 1. ✅ **v1.1.0** — cuentas, migración y aislamiento (en production desde 2026-10-20).
-2. **v1.1.1** — panel de superadministrador (cuentas, cambiar plan, extender prueba, activar 30 días, suspender/reactivar, auditoría; sin ver contenido de mensajes).
-3. **v1.1.2** — registro abierto, verificación, recuperación, prueba de 7 días, límites por plan, "Mi plan", banners y vencimientos. Retirar `/auth/setup` (hoy público mientras el piloto no está configurado) y aplicar límite de intentos a la verificación por código.
+2. 🔶 **v1.1.1** — panel de superadministrador (cuentas, cambiar plan, extender prueba, activar 30 días, suspender/reactivar, auditoría; sin ver contenido de mensajes). En staging desde 2026-10-21.
+3. **v1.1.2** — "Crear cuenta manualmente" (correo + plan + duración, con invitación para poner la contraseña; mismo mecanismo de enlace que "recuperar contraseña"), registro abierto, verificación, recuperación, prueba de 7 días, límites por plan, "Mi plan", banners y vencimientos. Retirar `/auth/setup` (hoy público mientras el piloto no está configurado) y aplicar límite de intentos a la verificación por código.
 4. **v1.1.3** — códigos de regalo.
 5. **v1.2** — invitar miembros del equipo; después cobros automáticos y referidos.
 

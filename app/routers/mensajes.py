@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.aislamiento import mensaje_de_la_cuenta, sesion_de_la_cuenta, validar_adjunto
 from app.auth import get_current_user, require_admin
+from app.cuentas import exigir_puede_programar
 from app.database import get_db
 from app.models import MensajeProgramado, SesionWhatsApp, Usuario
 from app import envio_config as cfg
@@ -43,6 +44,7 @@ async def programar_mensaje(
         )
     sesion = await _sesion_del_usuario(db, payload.id_sesion, usuario)
     await validar_adjunto(db, payload.url_media, usuario)
+    await exigir_puede_programar(db, usuario)
 
     datos = payload.model_dump(exclude={'forzar'})
     if datos["fecha_hora_disparo"] <= ahora:
@@ -283,6 +285,7 @@ async def editar_mensaje(
     if mensaje.estado_envio != "programado":
         raise HTTPException(status_code=409,
                             detail=f"Solo se pueden editar mensajes con estado 'programado'")
+    await exigir_puede_programar(db, usuario)
     cambios = payload.model_dump(exclude_unset=True)
     if cambios.get("url_media") and cambios["url_media"] != mensaje.url_media:
         await validar_adjunto(db, cambios["url_media"], usuario)

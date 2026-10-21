@@ -20,8 +20,9 @@ from app.auth import (
     hash_password,
     verify_password,
 )
+from app.cuentas import ENCABEZADO_SUSPENDIDA, MSG_SUSPENDIDA, estado_efectivo
 from app.database import get_db
-from app.models import CUENTA_INTERNA_ID, Usuario
+from app.models import CUENTA_INTERNA_ID, Cuenta, Usuario
 from app.schemas import PILOTO_ID_USUARIO
 from app.services import intentos
 
@@ -159,6 +160,16 @@ async def login(
     await intentos.limpiar(db, k_correo)
     await db.commit()
 
+    # Cuenta suspendida: no entra (solo se dice DESPUÉS de comprobar la contraseña)
+    cuenta = await db.get(Cuenta, user.id_cuenta)
+    if cuenta is None or estado_efectivo(cuenta).estado == "suspendida":
+        logger.info("Login rechazado: cuenta suspendida (usuario %s)", user.id_usuario)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=MSG_SUSPENDIDA,
+            headers=ENCABEZADO_SUSPENDIDA,
+        )
+
     if not user.email_verificado:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -173,7 +184,7 @@ async def login(
         samesite="lax",
         max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
     )
-    return {"ok": True, "rol": user.rol, "email": user.email}
+    return {"ok": True, "rol": user.rol, "email": user.email, "es_superadmin": user.es_superadmin}
 
 
 @router.post("/logout")
@@ -184,7 +195,8 @@ async def logout(response: Response):
 
 @router.get("/me")
 async def me(user: Usuario = Depends(get_current_user)):
-    return {"id": str(user.id_usuario), "email": user.email, "rol": user.rol}
+    # es_superadmin solo decide si se ve el enlace "Administración"; el acceso lo controla el servidor
+    return {"id": str(user.id_usuario), "email": user.email, "rol": user.rol, "es_superadmin": user.es_superadmin}
 
 
 @router.post("/setup", status_code=status.HTTP_201_CREATED)

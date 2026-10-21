@@ -45,7 +45,7 @@ def _hoy_seguro():
 async def datos(Session):
     async with Session() as db:
         # el otro usuario es de OTRA cuenta (su cuenta usa el mismo UUID que él)
-        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado) VALUES (:u, 'activa')"), {"u": U2})
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado, plan, periodo_fin) VALUES (:u, 'activa', 'pro', now() + interval '30 days')"), {"u": U2})
         await db.execute(text(
             "INSERT INTO usuarios (id_usuario, email, password_hash, rol, id_cuenta) "
             "VALUES (:u, 'otro@x.com', 'x', 'admin', :u)"), {"u": U2})

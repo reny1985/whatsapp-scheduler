@@ -144,7 +144,7 @@ async function loginUser() {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    currentUser = { email: data.email, rol: data.rol };
+    currentUser = { email: data.email, rol: data.rol, es_superadmin: data.es_superadmin };
     mostrarAuthScreen(false);
     actualizarUISegunRol();
     navigate('dashboard');
@@ -231,7 +231,7 @@ async function verificarCodigo() {
       method: 'POST',
       body: JSON.stringify({ email: _verifyEmail, codigo }),
     });
-    currentUser = { email: data.email, rol: data.rol };
+    currentUser = { email: data.email, rol: data.rol, es_superadmin: data.es_superadmin };
     mostrarAuthScreen(false);
     actualizarUISegunRol();
     navigate('dashboard');
@@ -264,6 +264,17 @@ function actualizarUISegunRol() {
   // viewer: ocultar el botón de programar en la nav
   const btnProgramar = document.querySelector('[data-page="programar"]');
   if (btnProgramar) btnProgramar.style.display = currentUser?.rol === 'viewer' ? 'none' : '';
+  // Enlace "Administración": solo para el superadministrador (el servidor responde 404 a cualquier otro)
+  const navAdmin = document.getElementById('nav-admin');
+  if (navAdmin) navAdmin.style.display = currentUser?.es_superadmin ? '' : 'none';
+}
+
+// Cuenta suspendida (403 con X-Cuenta: suspendida): se vuelve al login con el aviso
+function mostrarCuentaSuspendida(mensaje) {
+  currentUser = null;
+  mostrarAuthScreen(true);
+  mostrarLogin();
+  showAlert('alert-login', mensaje || 'Tu cuenta está suspendida.', 'error');
 }
 
 // ============================================================
@@ -283,6 +294,9 @@ async function apiFetch(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 403 && res.headers.get('X-Cuenta') === 'suspendida' && path !== '/auth/login') {
+    mostrarCuentaSuspendida(data.detail);
+  }
   if (!res.ok) throw Object.assign(new Error(data.detail || 'Error ' + res.status), { data, status: res.status });
   return data;
 }

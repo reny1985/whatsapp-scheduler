@@ -47,7 +47,7 @@ def mundo(Session, monkeypatch):
 async def _usuario2(maker):
     async with maker() as db:
         # el otro usuario es de OTRA cuenta (su cuenta usa el mismo UUID que él)
-        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado) VALUES (:u, 'activa') ON CONFLICT DO NOTHING"), {"u": U2})
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado, plan, periodo_fin) VALUES (:u, 'activa', 'pro', now() + interval '30 days') ON CONFLICT DO NOTHING"), {"u": U2})
         await db.execute(text("INSERT INTO usuarios (id_usuario, email, password_hash, rol, email_verificado, id_cuenta) "
                               "VALUES (:u, 'otro@x.com', 'x', 'admin', true, :u) ON CONFLICT DO NOTHING"), {"u": U2})
         await db.commit()
@@ -376,7 +376,7 @@ async def test_migracion_de_id_usuario_es_idempotente_y_no_borra_datos(Session):
     engine = Session.kw["bind"]
     sid = uuid.uuid4()
     async with Session() as db:
-        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado) VALUES (:u, 'activa')"), {"u": U2})
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, estado, plan, periodo_fin) VALUES (:u, 'activa', 'pro', now() + interval '30 days')"), {"u": U2})
         await db.execute(text("INSERT INTO usuarios (id_usuario, email, password_hash, rol, email_verificado, id_cuenta) VALUES (:u,'otro@x.com','x','admin',true,:u)"), {"u": U2})
         await db.execute(text("INSERT INTO sesiones_whatsapp (id_sesion,id_usuario,instancia_evolution,estado_conexion,numero_telefono) VALUES (:s,:u,'wa-a','conectado',:n)"),
                          {"s": sid, "u": U2, "n": NUM})

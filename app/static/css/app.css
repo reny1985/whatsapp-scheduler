@@ -103,6 +103,9 @@ button, input, select, textarea { font-family: inherit; }
 .nav-btn .nav-label { line-height: 1.1; white-space: nowrap; }
 .nav-salir { margin-top: auto; }
 .nav-salir:hover { color: var(--color-danger); }
+a.nav-btn, a.nav-btn:hover { text-decoration: none; }
+.nav-corto { display: none; }
+@media (max-width: 640px) { .nav-largo { display: none; } .nav-corto { display: inline; } }
 
 /* Main area */
 .main-content {

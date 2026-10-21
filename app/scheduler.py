@@ -25,8 +25,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cuentas import MOTIVO_SUSPENDIDA, estado_efectivo, motivo_no_envio
 from app.database import AsyncSessionLocal as AsyncSessionFactory
-from app.models import MensajeProgramado, SesionWhatsApp, condicion_sesion_nunca_conectada
+from app.models import Cuenta, MensajeProgramado, SesionWhatsApp, condicion_sesion_nunca_conectada
 from app import envio_config as cfg
 from app.routers.media import DOC_EXT_MIME
 from app.services import semaforo, vigilancia, webhook_config
@@ -261,8 +262,9 @@ async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
     'en_cola' (a tiempo) o 'vencido' (no pudo tomarse a tiempo). Devuelve cuántos quedaron en cola."""
     tolerancia = timedelta(minutes=TOLERANCIA_RETRASO_MIN)
     filas = (await db.execute(
-        select(MensajeProgramado, SesionWhatsApp)
+        select(MensajeProgramado, SesionWhatsApp, Cuenta)
         .outerjoin(SesionWhatsApp, MensajeProgramado.id_sesion == SesionWhatsApp.id_sesion)
+        .outerjoin(Cuenta, MensajeProgramado.id_cuenta == Cuenta.id_cuenta)
         .where(
             MensajeProgramado.estado_envio == "programado",
             MensajeProgramado.fecha_hora_disparo <= ahora,       # nunca antes de su hora
@@ -271,9 +273,23 @@ async def _tomar_mensajes(db: AsyncSession, ahora: datetime) -> int:
     )).all()
 
     en_cola = 0
-    for msg, sesion in filas:
+    for msg, sesion, cuenta in filas:
         disparo = _aware(msg.fecha_hora_disparo)
         retraso = ahora - disparo
+
+        # Cuenta vencida o suspendida: a su hora el mensaje pasa a vencido con el motivo; la serie no se clona
+        est = estado_efectivo(cuenta, ahora) if cuenta else None
+        if est is None or not est.puede_enviar:
+            motivo = motivo_no_envio(est) if est else "La cuenta no existe: el mensaje no se envió."
+            res = await db.execute(
+                update(MensajeProgramado)
+                .where(MensajeProgramado.id_mensaje == msg.id_mensaje, MensajeProgramado.estado_envio == "programado")
+                .values(estado_envio="vencido", error_envio=motivo, tomado_en=None)
+            )
+            if res.rowcount:
+                logger.warning("⌛ Mensaje %s vencido: cuenta %s (%s)", msg.id_mensaje, msg.id_cuenta,
+                               est.estado if est else "inexistente")
+            continue
 
         if retraso > tolerancia:
             motivo = _motivo_vencido(sesion, retraso)
@@ -367,6 +383,16 @@ async def _trabajador_sesion(id_sesion) -> None:
                     logger.warning("Mensaje %s en cola sin sesión utilizable; se devuelve a programado", msg.id_mensaje)
                     await db.execute(update(MensajeProgramado).where(MensajeProgramado.id_mensaje == msg.id_mensaje)
                                      .values(estado_envio="programado", tomado_en=None))
+                    await db.commit()
+                    continue
+                # Suspendida: también se frena lo que ya estaba en cola (el vencimiento, en cambio, no la interrumpe)
+                cuenta = await db.get(Cuenta, msg.id_cuenta)
+                if cuenta is None or estado_efectivo(cuenta).estado == "suspendida":
+                    logger.warning("Mensaje %s en cola: la cuenta está suspendida; pasa a vencido", msg.id_mensaje)
+                    await db.execute(update(MensajeProgramado)
+                                     .where(MensajeProgramado.id_mensaje == msg.id_mensaje,
+                                            MensajeProgramado.estado_envio == "en_cola")
+                                     .values(estado_envio="vencido", error_envio=MOTIVO_SUSPENDIDA, tomado_en=None))
                     await db.commit()
                     continue
 
@@ -492,6 +518,9 @@ async def _recuperar_tras_reinicio(db: AsyncSession, ahora: datetime) -> None:
                       f"quedó muy atrás. Reprográmalo si todavía hace falta.")
             await db.execute(update(MensajeProgramado).where(MensajeProgramado.id_mensaje == m.id_mensaje)
                              .values(estado_envio="vencido", error_envio=motivo))
+            cuenta = await db.get(Cuenta, m.id_cuenta)
+            if cuenta is None or not estado_efectivo(cuenta, ahora).puede_enviar:
+                continue                # cuenta vencida o suspendida: la serie no se clona
             if m.recurrencia and m.recurrencia != "none":
                 siguiente = _proxima_ocurrencia_futura(_aware(m.fecha_hora_disparo), m.recurrencia, ahora)
                 if siguiente:

@@ -11,8 +11,9 @@ from fastapi import Cookie, Depends, HTTPException, status
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cuentas import ENCABEZADO_SUSPENDIDA, MSG_SUSPENDIDA, estado_efectivo
 from app.database import get_db
-from app.models import Usuario
+from app.models import Cuenta, Usuario
 
 SECRET_KEY: str = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
 ALGORITHM = "HS256"
@@ -72,6 +73,38 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Tu sesión se cerró. Vuelve a iniciar sesión.",
         )
+    # Cuenta suspendida: ninguna petición pasa, aunque tenga un token abierto
+    cuenta = await db.get(Cuenta, user.id_cuenta)
+    if cuenta is None or estado_efectivo(cuenta).estado == "suspendida":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=MSG_SUSPENDIDA,
+            headers=ENCABEZADO_SUSPENDIDA,
+        )
+    return user
+
+
+async def superadmin_o_none(access_token: str | None, db: AsyncSession) -> Usuario | None:
+    """El usuario si es el superadministrador; si no (sin login, token inválido, usuario normal), None.
+    es_superadmin se lee de la BD en esta misma petición (nunca del JWT) y además su cuenta tiene que ser la interna."""
+    try:
+        user = await get_current_user(access_token, db)
+    except HTTPException:
+        return None
+    if not user.es_superadmin:
+        return None
+    cuenta = await db.get(Cuenta, user.id_cuenta)
+    return user if cuenta is not None and cuenta.es_interna else None
+
+
+async def require_superadmin(
+    access_token: str | None = Cookie(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> Usuario:
+    """Para cualquier otro usuario (o sin login) responde igual que una ruta que no existe."""
+    user = await superadmin_o_none(access_token, db)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
     return user
 
 

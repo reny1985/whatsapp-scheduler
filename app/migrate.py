@@ -8,6 +8,8 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.planes import ESTADOS_CUENTA, PLANES
+
 logger = logging.getLogger("whatsapp_scheduler")
 
 # Cada ítem se ejecuta en orden; todos son idempotentes.
@@ -319,6 +321,80 @@ _STEPS = [
         ventana_inicio TIMESTAMPTZ NOT NULL,
         conteo         INTEGER NOT NULL
     )
+    """,
+
+    # ── v1.1.1: panel de superadministrador ───────────────────────────────
+    # Solo agrega: ninguna fila ni columna existente cambia.
+    "ALTER TABLE cuentas ADD COLUMN IF NOT EXISTS estado_antes_suspension VARCHAR(20)",
+    """
+    CREATE TABLE IF NOT EXISTS auditoria_admin (
+        id_auditoria UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        creada_en    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        id_admin     UUID NOT NULL REFERENCES usuarios (id_usuario),
+        email_admin  VARCHAR(255) NOT NULL,
+        id_cuenta    UUID NOT NULL REFERENCES cuentas (id_cuenta),
+        accion       VARCHAR(40) NOT NULL,
+        antes        JSONB,
+        despues      JSONB,
+        nota         TEXT,
+        ip           VARCHAR(64),
+        clave        UUID UNIQUE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_auditoria_cuenta ON auditoria_admin (id_cuenta, creada_en)",
+    # La auditoría no se modifica ni se borra (tampoco con TRUNCATE)
+    """
+    CREATE OR REPLACE FUNCTION fn_auditoria_inmutable() RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'auditoria_admin no se puede modificar ni borrar' USING ERRCODE = 'insufficient_privilege';
+    END $$ LANGUAGE plpgsql
+    """,
+    "CREATE OR REPLACE TRIGGER trg_auditoria_inmutable BEFORE UPDATE OR DELETE ON auditoria_admin "
+    "FOR EACH ROW EXECUTE FUNCTION fn_auditoria_inmutable()",
+    "CREATE OR REPLACE TRIGGER trg_auditoria_sin_truncate BEFORE TRUNCATE ON auditoria_admin "
+    "FOR EACH STATEMENT EXECUTE FUNCTION fn_auditoria_inmutable()",
+    """
+    CREATE TABLE IF NOT EXISTS periodos_cuenta (
+        id_periodo   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id_cuenta    UUID NOT NULL REFERENCES cuentas (id_cuenta),
+        tipo         VARCHAR(20) NOT NULL,
+        plan         VARCHAR(20),
+        inicio       TIMESTAMPTZ NOT NULL,
+        fin          TIMESTAMPTZ NOT NULL,
+        precio_usd   NUMERIC(8, 2),
+        nota         TEXT,
+        id_auditoria UUID REFERENCES auditoria_admin (id_auditoria),
+        creado_en    TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_periodos_cuenta ON periodos_cuenta (id_cuenta, inicio)",
+    # Candados de la cuenta (valores tomados de app/planes.py al crear el candado). Se agrega cada uno solo si los
+    # datos ya lo cumplen; si no, queda un WARNING en el log (el ensayo de la migración comprueba que estén todos).
+    f"""
+    DO $$
+    DECLARE c record;
+    BEGIN
+        FOR c IN SELECT * FROM (VALUES
+            ('ck_cuentas_estado', 'estado IN ({", ".join(f"''{e}''" for e in ESTADOS_CUENTA)})'),
+            ('ck_cuentas_plan', 'plan IS NULL OR plan IN ({", ".join(f"''{p}''" for p in PLANES)})'),
+            ('ck_cuentas_estado_antes', 'estado_antes_suspension IS NULL OR estado_antes_suspension IN '
+                                         '(''prueba'', ''activa'', ''cortesia'', ''vencida'')'),
+            -- la cuenta interna solo puede estar activa y sin vencimiento
+            ('ck_cuentas_interna', 'NOT es_interna OR (estado = ''activa'' AND periodo_fin IS NULL)'),
+            -- ninguna otra cuenta puede estar activa o en cortesía sin fecha de fin (acceso para siempre por error)
+            ('ck_cuentas_con_vencimiento', 'es_interna OR estado NOT IN (''activa'', ''cortesia'') '
+                                            'OR periodo_fin IS NOT NULL')
+        ) AS t (nombre, regla) LOOP
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = c.nombre) THEN
+                EXECUTE format('SELECT 1 FROM cuentas WHERE NOT (%s) LIMIT 1', c.regla);
+                IF NOT FOUND THEN
+                    EXECUTE format('ALTER TABLE cuentas ADD CONSTRAINT %I CHECK (%s)', c.nombre, c.regla);
+                ELSE
+                    RAISE WARNING 'v1.1.1: hay cuentas que no cumplen %; el candado no se aplicó', c.nombre;
+                END IF;
+            END IF;
+        END LOOP;
+    END $$
     """,
 ]
 

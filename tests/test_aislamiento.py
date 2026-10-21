@@ -56,6 +56,16 @@ PROPIAS = {
     ("GET", "/mensajes/recientes"), ("GET", "/mensajes/sin-sesion/conteo"), ("GET", "/mensajes/"),
     ("GET", "/dashboard/resumen"), ("GET", "/plantillas/"), ("POST", "/plantillas/"), ("POST", "/media/subir"),
 }
+# Panel de superadministrador (v1.1.1): para cualquier otro usuario, o sin login, TODAS responden 404 como una ruta
+# inexistente (se prueba en tests/test_admin.py, que recorre esta lista).
+ADMIN = {
+    ("GET", "/admin"), ("GET", "/admin/admin.js"), ("GET", "/admin/api/resumen"), ("GET", "/admin/api/cuentas"),
+    ("GET", "/admin/api/cuentas/{id_cuenta}"), ("GET", "/admin/api/cuentas/{id_cuenta}/historial"),
+    ("POST", "/admin/api/cuentas/{id_cuenta}/plan"), ("POST", "/admin/api/cuentas/{id_cuenta}/extender-prueba"),
+    ("POST", "/admin/api/cuentas/{id_cuenta}/activar"), ("POST", "/admin/api/cuentas/{id_cuenta}/suspender"),
+    ("POST", "/admin/api/cuentas/{id_cuenta}/reactivar"),
+    ("POST", "/admin/api/cuentas/{id_cuenta}/numeros/{id_sesion}/mostrar"),
+}
 FUTURO = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
 # (método, ruta-plantilla, url concreta, cuerpo json, códigos aceptados): B usando ids de A
 CASOS_AJENOS = [
@@ -125,7 +135,8 @@ async def mundo(Session, monkeypatch, tmp_path):
     async with maker() as db:
         await db.execute(text("UPDATE usuarios SET email='duena-a@x.com', password_hash=:h, email_verificado=TRUE "
                               "WHERE id_usuario=:u"), {"u": UA, "h": hash_password("clave-de-A-123")})
-        await db.execute(text("INSERT INTO cuentas (id_cuenta, nombre, estado) VALUES (:c, 'Cliente B', 'prueba')"), {"c": CB})
+        await db.execute(text("INSERT INTO cuentas (id_cuenta, nombre, estado, prueba_fin) "
+                              "VALUES (:c, 'Cliente B', 'prueba', now() + interval '7 days')"), {"c": CB})
         await db.execute(text("INSERT INTO usuarios (id_usuario, id_cuenta, email, password_hash, rol, email_verificado) "
                               "VALUES (:u, :c, 'cliente-b@x.com', :h, 'admin', TRUE)"),
                          {"u": UB, "c": CB, "h": hash_password("clave-de-B-123")})
@@ -199,18 +210,22 @@ class _EvolutionProhibida:
 # ── Prueba guardiana ─────────────────────────────────────────────────────────
 
 async def test_guardiana_toda_ruta_tiene_definido_su_aislamiento():
-    cubiertas = PUBLICAS | PROPIAS | {(m, plantilla) for m, plantilla, *_ in CASOS_AJENOS}
+    cubiertas = PUBLICAS | PROPIAS | ADMIN | {(m, plantilla) for m, plantilla, *_ in CASOS_AJENOS}
     sin_decidir = _rutas_app() - cubiertas
     assert not sin_decidir, (
-        f"Rutas sin prueba de aislamiento: {sorted(sin_decidir)}. Agrégalas a PUBLICAS, PROPIAS o CASOS_AJENOS "
+        f"Rutas sin prueba de aislamiento: {sorted(sin_decidir)}. Agrégalas a PUBLICAS, PROPIAS, ADMIN o CASOS_AJENOS "
         f"en tests/test_aislamiento.py (con un caso que intente usar datos de otra cuenta).")
+    fuera_de_admin = {r for r in ADMIN if not (r[1] == "/admin" or r[1].startswith("/admin/"))}
+    assert not fuera_de_admin, f"Rutas de ADMIN fuera de /admin (el candado no las cubre): {fuera_de_admin}"
+    admin_sin_declarar = {r for r in _rutas_app() if r[1].startswith("/admin")} - ADMIN
+    assert not admin_sin_declarar, f"Rutas /admin que no están en ADMIN: {admin_sin_declarar}"
     sobrantes = cubiertas - _rutas_app()
     assert not sobrantes, f"Rutas en la matriz que ya no existen: {sorted(sobrantes)}"
 
 
 async def test_sin_login_toda_ruta_no_publica_responde_401(mundo):
     async with _cliente(None) as c:
-        for metodo, ruta in sorted(_rutas_app() - PUBLICAS):
+        for metodo, ruta in sorted(_rutas_app() - PUBLICAS - ADMIN):     # las de ADMIN responden 404 (test_admin.py)
             url = (ruta.replace("{id_sesion}", str(SA)).replace("{id_mensaje}", str(MA))
                        .replace("{id_plantilla}", str(PA)))
             r = await c.request(metodo, url)

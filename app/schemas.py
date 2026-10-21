@@ -11,13 +11,11 @@ from pydantic import (
     AwareDatetime,
     BaseModel,
     ConfigDict,
-    EmailStr,
     Field,
     field_validator,
     model_validator,
 )
 
-EstadoSuscripcion = Literal["prueba", "activa", "suspendida", "cancelada"]
 EstadoConexion = Literal["qr_pendiente", "conectado", "desconectado"]
 EstadoEnvio = Literal["programado", "en_cola", "enviando", "enviado", "fallido", "cancelado", "vencido"]
 TipoMedia = Literal["image", "video", "audio", "document"]
@@ -26,18 +24,6 @@ Recurrencia = Literal["none", "daily", "weekly", "monthly"]
 
 class ORMBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
-
-class UsuarioCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-
-
-class UsuarioRead(ORMBase):
-    id_usuario: uuid.UUID
-    email: EmailStr
-    estado_suscripcion: EstadoSuscripcion
-    fecha_registro: datetime
 
 
 # UUID fijo para el modo piloto (sin autenticación)

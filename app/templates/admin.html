@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Administración · Enviafast</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" crossorigin="anonymous" />
+  <link rel="stylesheet" href="/static/css/app.css?v=__V__" />
+  <style>
+    /* Panel de superadministrador: estilos propios (solo se sirven detrás del candado de /admin) */
+    .adm-top { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px;
+               padding: 12px 20px; background: var(--color-surface); border-bottom: 1px solid var(--color-border); }
+    .adm-top h1 { font-size: 1.05rem; font-weight: 600; margin: 0; }
+    .adm-top .spacer { flex: 1; }
+    .adm-main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .adm-estados { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
+    .adm-tile { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md);
+                padding: 14px; cursor: pointer; text-align: left; color: var(--color-text); font: inherit; }
+    .adm-tile:hover, .adm-tile:focus-visible { border-color: var(--color-green); outline: none; }
+    .adm-tile.activo { border-color: var(--color-green); background: var(--color-surface2); }
+    .adm-tile .v { font-size: 1.8rem; font-weight: 700; line-height: 1; }
+    .adm-tile .n { font-size: .8rem; color: var(--color-muted); margin-top: 4px; }
+    .adm-dinero { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; margin-bottom: 20px; }
+    .adm-caja { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 14px; }
+    .adm-caja .t { font-size: .78rem; color: var(--color-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+    .adm-caja .v { font-size: 1.6rem; font-weight: 700; }
+    .adm-sub { font-size: .82rem; color: var(--color-muted); }
+    .adm-vence { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--color-border);
+                 font-size: .86rem; cursor: pointer; }
+    .adm-vence:first-of-type { border-top: none; }
+    .adm-filtros { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .adm-filtros .form-control { width: auto; flex: 1 1 160px; }
+    .adm-filtros input.form-control { flex: 3 1 240px; }
+    .adm-lista { display: flex; flex-direction: column; gap: 8px; }
+    .adm-fila { display: grid; grid-template-columns: 2.2fr 1fr 1.2fr 1fr .8fr 1fr 1fr; gap: 10px; align-items: center;
+                background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+                padding: 12px 14px; font-size: .86rem; cursor: pointer; color: var(--color-text); text-align: left; font-family: inherit; width: 100%; }
+    .adm-fila:hover, .adm-fila:focus-visible { border-color: var(--color-green); outline: none; }
+    .adm-fila.cab { background: transparent; border: none; cursor: default; color: var(--color-muted); font-size: .75rem;
+                    text-transform: uppercase; letter-spacing: .04em; padding-top: 0; padding-bottom: 0; }
+    .adm-email { font-weight: 600; overflow-wrap: anywhere; }
+    .adm-etq { display: none; color: var(--color-muted); }
+    .adm-ficha { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 24px; font-size: .9rem; }
+    .adm-ficha .t { font-size: .75rem; color: var(--color-muted); text-transform: uppercase; letter-spacing: .04em; }
+    .adm-acciones { display: flex; gap: 8px; flex-wrap: wrap; }
+    .adm-num { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--color-border); font-size: .9rem; }
+    .adm-num:first-child { border-top: none; }
+    .adm-hist { border-left: 2px solid var(--color-border); padding: 4px 0 10px 14px; margin-left: 4px; font-size: .86rem; }
+    .adm-hist .f { color: var(--color-muted); font-size: .78rem; }
+    .adm-cambio { color: var(--color-muted); }
+    .adm-cambio b { color: var(--color-text); font-weight: 600; }
+    dialog.adm-dlg { margin: auto; width: min(460px, calc(100vw - 32px)); background: var(--color-surface); color: var(--color-text);
+                     border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 20px; box-shadow: var(--shadow); }
+    dialog.adm-dlg::backdrop { background: rgba(0,0,0,.6); }
+    .adm-dlg h2 { font-size: 1.05rem; margin: 0 0 4px; }
+    .adm-dlg .botones { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+    .adm-revision { background: var(--color-surface2); border-radius: var(--radius-sm); padding: 10px 12px; font-size: .88rem; margin-top: 12px; }
+    .adm-revision div + div { margin-top: 4px; }
+    @media (max-width: 760px) {
+      .adm-main { padding: 16px; }
+      .adm-estados { grid-template-columns: repeat(2, 1fr); }
+      .adm-estados .adm-tile:last-child { grid-column: 1 / -1; }
+      .adm-dinero { grid-template-columns: 1fr; }
+      .adm-fila { grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+      .adm-fila.cab { display: none; }
+      .adm-fila > :first-child { grid-column: 1 / -1; }
+      .adm-etq { display: inline; }
+      .adm-top { padding: 10px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="adm-top">
+    <h1>Administración</h1>
+    <div class="spacer"></div>
+    <a href="/" class="btn btn-secondary btn-sm">← Volver a la app</a>
+  </header>
+  <main class="adm-main" id="vista" aria-live="polite"></main>
+
+  <dialog class="adm-dlg" id="dlg-accion" aria-labelledby="dlg-titulo">
+    <h2 id="dlg-titulo"></h2>
+    <p class="adm-sub" id="dlg-cuenta"></p>
+    <div id="dlg-form" style="margin-top:14px"></div>
+    <div id="dlg-alerta"></div>
+    <div id="dlg-revision" class="adm-revision" style="display:none"></div>
+    <div class="botones">
+      <button type="button" class="btn btn-secondary" id="dlg-cancelar">Cancelar</button>
+      <button type="button" class="btn btn-secondary" id="dlg-revisar">Revisar</button>
+      <button type="button" class="btn btn-primary" id="dlg-confirmar" style="display:none">Confirmar</button>
+    </div>
+  </dialog>
+
+  <script src="/admin/admin.js?v=__V__"></script>
+</body>
+</html>

@@ -4,11 +4,13 @@ Modelos ORM (SQLAlchemy 2.0, estilo Mapped).
 """
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
     ForeignKey,
     Index,
+    Numeric,
     String,
     Text,
     and_,
@@ -16,7 +18,7 @@ from sqlalchemy import (
     or_,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -44,10 +46,51 @@ class Cuenta(Base):
     mensajes_prueba_usados: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
     es_interna: Mapped[bool] = mapped_column(nullable=False, server_default=text("FALSE"))
     motivo_suspension: Mapped[str | None] = mapped_column(Text)
+    estado_antes_suspension: Mapped[str | None] = mapped_column(String(20))   # al reactivar vuelve a este estado
     creada_en: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<Cuenta {self.id_cuenta} [{self.estado}]>"
+
+
+class AuditoriaAdmin(Base):
+    """Cada acción del superadministrador sobre una cuenta: quién, qué, antes, después y cuándo. La BD impide
+    modificarla o borrarla (trigger)."""
+    __tablename__ = "auditoria_admin"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id_auditoria: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("uuid_generate_v4()"),
+    )
+    creada_en: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    id_admin: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuarios.id_usuario"), nullable=False)
+    email_admin: Mapped[str] = mapped_column(String(255), nullable=False)
+    id_cuenta: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("cuentas.id_cuenta"), nullable=False)
+    accion: Mapped[str] = mapped_column(String(40), nullable=False)
+    antes: Mapped[dict | None] = mapped_column(JSONB)
+    despues: Mapped[dict | None] = mapped_column(JSONB)
+    nota: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(String(64))
+    clave: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), unique=True)   # evita aplicar dos veces
+
+
+class PeriodoCuenta(Base):
+    """Historial de períodos de una cuenta (prueba, extensión de prueba, pagado, cortesía)."""
+    __tablename__ = "periodos_cuenta"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id_periodo: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("uuid_generate_v4()"),
+    )
+    id_cuenta: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("cuentas.id_cuenta"), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(20), nullable=False)
+    plan: Mapped[str | None] = mapped_column(String(20))
+    inicio: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    fin: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    precio_usd: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    nota: Mapped[str | None] = mapped_column(Text)
+    id_auditoria: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("auditoria_admin.id_auditoria"))
+    creado_en: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
 
 class Usuario(Base):
